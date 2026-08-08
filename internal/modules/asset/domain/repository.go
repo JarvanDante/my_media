@@ -4,7 +4,7 @@ import "context"
 
 type Asset struct {
 	Pk              int64  // 内部自增主键
-	Code            string // 对外 8 位 id
+	Code            string // 对外短码(新 16 位，历史可能 8 位)
 	Title           string
 	CoverUrl        string
 	SourceBucket    string

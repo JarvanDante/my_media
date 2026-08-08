@@ -3,7 +3,7 @@ package v1
 import "github.com/gogf/gf/v2/frame/g"
 
 type AssetItem struct {
-	Id          string `json:"id"` // 8 位短码
+	Id          string `json:"id"` // 对外短码(新 16 位，历史可能 8 位)
 	Title       string `json:"title"`
 	CoverUrl    string `json:"cover_url"`
 	PlayUrl     string `json:"play_url"`
@@ -25,7 +25,7 @@ type ListRes struct {
 
 type DetailReq struct {
 	g.Meta `path:"/open/assets/{id}" method:"get" tags:"Open/Asset" summary:"媒资详情"`
-	Id     string `json:"id" in:"path" v:"required|length:8,8"`
+	Id     string `json:"id" in:"path" v:"required|length:8,16"`
 }
 
 type DetailRes struct {
@@ -35,7 +35,7 @@ type DetailRes struct {
 
 type PickReq struct {
 	g.Meta `path:"/open/assets/{id}/pick" method:"post" tags:"Open/Asset" summary:"选用媒资"`
-	Id     string `json:"id" in:"path" v:"required|length:8,8"`
+	Id     string `json:"id" in:"path" v:"required|length:8,16"`
 }
 
 type PickRes struct {

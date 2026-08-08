@@ -8,9 +8,10 @@ import (
 // 不含易混字符 0/O/1/I/l
 const alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz"
 
-// NewPublicID 生成 8 位不重复短码(碰撞概率极低, 落库唯一索引兜底)。
+// NewPublicID 生成 16 位对外短码(密码学随机 + 落库唯一索引兜底)。
+// 字符集约 56，空间约 56^16，远高于业务体量；历史资产可能仍为 8 位。
 func NewPublicID() (string, error) {
-	const n = 8
+	const n = 16
 	buf := make([]byte, n)
 	if _, err := rand.Read(buf); err != nil {
 		return "", fmt.Errorf("rand: %w", err)
