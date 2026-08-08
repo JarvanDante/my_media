@@ -1,0 +1,37 @@
+# 复制为 config.yaml 后按需修改（config.yaml 已被 gitignore）
+# cp manifest/config/config.example.yaml manifest/config/config.yaml
+
+server:
+  address:     ":8004"
+  openapiPath: "/api.json"
+  swaggerPath: "/swagger"
+
+logger:
+  level: "all"
+  stdout: true
+
+database:
+  default:
+    link: "pgsql:postgres:654321@tcp(127.0.0.1:5432)/my_media?sslmode=disable"
+
+security:
+  admin_token: "dev-admin-token-change-me"
+
+minio:
+  endpoint: "127.0.0.1:9000"
+  access_key: "minioadmin"
+  secret_key: "minioadmin"
+  bucket: "my-media"
+  use_ssl: false
+  public_base: "http://127.0.0.1:9000/my-media"
+
+kafka:
+  brokers:
+    - "127.0.0.1:9092"
+  topic_jobs: "media.transcode.jobs"
+  topic_results: "media.transcode.results"
+  group: "my_media"
+
+transcode:
+  profile: "h264_hls"
+  biz: "media"

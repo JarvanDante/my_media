@@ -3,7 +3,7 @@ package main
 import (
 	"github.com/gogf/gf/v2/os/gctx"
 
-	"my_media/internal/cmd"
+	"github.com/JarvanDante/my_media/internal/cmd"
 )
 
 func main() {

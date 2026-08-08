@@ -1,8 +1,11 @@
-module my_media
+module github.com/JarvanDante/my_media
 
 go 1.23.0
 
-require github.com/gogf/gf/v2 v2.10.0
+require (
+	github.com/gogf/gf/contrib/drivers/pgsql/v2 v2.10.0
+	github.com/gogf/gf/v2 v2.10.0
+)
 
 require (
 	github.com/BurntSushi/toml v1.5.0 // indirect
@@ -15,6 +18,7 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/grokify/html-strip-tags-go v0.1.0 // indirect
+	github.com/lib/pq v1.10.9 // indirect
 	github.com/magiconair/properties v1.8.10 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect

@@ -1,7 +1,19 @@
-ROOT_DIR    = $(shell pwd)
-NAMESPACE   = "default"
-DEPLOY_NAME = "template-single"
-DOCKER_NAME = "template-single"
+APP := my_media
+BIN := bin
 
-include ./hack/hack-cli.mk
-include ./hack/hack.mk
+.PHONY: build dev tidy clean migrate
+
+build:
+	go build -o $(BIN)/mediaapi .
+
+dev:
+	gf run main.go
+
+tidy:
+	go mod tidy
+
+migrate:                        ## goose 迁移(my_media 库)
+	goose -dir manifest/sql/migrations postgres "host=127.0.0.1 port=5432 user=postgres password=654321 dbname=my_media sslmode=disable" up
+
+clean:
+	rm -rf $(BIN)
