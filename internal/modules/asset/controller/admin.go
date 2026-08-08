@@ -32,11 +32,11 @@ func (c *Admin) List(ctx context.Context, req *v1.ListReq) (res *v1.ListRes, err
 }
 
 func (c *Admin) Create(ctx context.Context, req *v1.CreateReq) (res *v1.CreateRes, err error) {
-	id, err := c.svc.Create(ctx, req.Title, req.CoverUrl, req.Remark)
+	code, err := c.svc.Create(ctx, req.Title, req.CoverUrl, req.Remark)
 	if err != nil {
 		return nil, err
 	}
-	return &v1.CreateRes{Id: id}, nil
+	return &v1.CreateRes{Id: code}, nil
 }
 
 func (c *Admin) Detail(ctx context.Context, req *v1.DetailReq) (res *v1.DetailRes, err error) {
@@ -63,16 +63,24 @@ func (c *Admin) UploadURL(ctx context.Context, req *v1.UploadURLReq) (res *v1.Up
 }
 
 func (c *Admin) Transcode(ctx context.Context, req *v1.TranscodeReq) (res *v1.TranscodeRes, err error) {
-	jobID, err := c.svc.TriggerTranscode(ctx, req.Id)
+	jobID, err := c.svc.TriggerTranscode(ctx, req.Id, req.CoverSeekSec)
 	if err != nil {
 		return nil, err
 	}
 	return &v1.TranscodeRes{JobId: jobID}, nil
 }
 
+func (c *Admin) Delete(ctx context.Context, req *v1.DeleteReq) (res *v1.DeleteRes, err error) {
+	n, err := c.svc.Delete(ctx, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	return &v1.DeleteRes{DeletedObjects: n}, nil
+}
+
 func toAdminItem(a domain.Asset) v1.AssetItem {
 	return v1.AssetItem{
-		Id: a.Id, Title: a.Title, CoverUrl: a.CoverUrl, Status: a.Status,
+		Id: a.Code, Title: a.Title, CoverUrl: a.CoverUrl, Status: a.Status,
 		TranscodeStatus: a.TranscodeStatus, PlayUrl: a.PlayUrl,
 		DurationSec: a.DurationSec, CreatedAt: a.CreatedAt,
 	}

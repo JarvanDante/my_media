@@ -3,7 +3,8 @@ package domain
 import "context"
 
 type Asset struct {
-	Id              int64
+	Pk              int64  // 内部自增主键
+	Code            string // 对外 8 位 id
 	Title           string
 	CoverUrl        string
 	SourceBucket    string
@@ -32,12 +33,13 @@ type TranscodeResult struct {
 	Status      string // processing|ready|failed
 	PlayKey     string
 	PlayURL     string
+	CoverURL    string
 	DurationSec int
 	Error       string
 }
 
 type PickRecord struct {
-	AssetId     int64
+	Code        string
 	Title       string
 	CoverUrl    string
 	PlayUrl     string
@@ -48,13 +50,14 @@ type PickRecord struct {
 
 type Repository interface {
 	List(ctx context.Context, f ListFilter) (list []Asset, total int, err error)
-	Create(ctx context.Context, title, coverUrl, remark string) (id int64, err error)
-	Get(ctx context.Context, id int64) (*Asset, error)
-	Pick(ctx context.Context, appKey, siteCode string, assetID int64) (*Asset, error)
+	Create(ctx context.Context, title, coverUrl, remark string) (code string, err error)
+	GetByCode(ctx context.Context, code string) (*Asset, error)
+	Delete(ctx context.Context, pk int64) error
+	Pick(ctx context.Context, appKey, siteCode, code string) (*Asset, error)
 	ListPicks(ctx context.Context, appKey string, page, size int) (list []PickRecord, total int, err error)
-	PickedSet(ctx context.Context, appKey string, assetIDs []int64) (map[int64]bool, error)
+	PickedSet(ctx context.Context, appKey string, codes []string) (map[string]bool, error)
 
-	BindSource(ctx context.Context, id int64, bucket, key string) error
-	MarkTranscoding(ctx context.Context, id int64, jobID, profile string) error
+	BindSource(ctx context.Context, pk int64, bucket, key string) error
+	MarkTranscoding(ctx context.Context, pk int64, jobID, profile string) error
 	ApplyTranscodeResult(ctx context.Context, r TranscodeResult) error
 }

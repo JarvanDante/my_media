@@ -10,6 +10,7 @@ import (
 
 	"github.com/JarvanDante/my_media/internal/consts"
 	"github.com/JarvanDante/my_media/internal/modules/asset/domain"
+	"github.com/JarvanDante/my_media/internal/shared/kit"
 	"github.com/JarvanDante/my_media/internal/shared/transcode"
 )
 
@@ -50,20 +51,39 @@ func (r *assetRepo) List(ctx context.Context, f domain.ListFilter) ([]domain.Ass
 	return list, total, nil
 }
 
-func (r *assetRepo) Create(ctx context.Context, title, coverUrl, remark string) (int64, error) {
-	return g.DB().Model("media_asset").Ctx(ctx).Data(g.Map{
-		"title":            title,
-		"cover_url":        coverUrl,
-		"remark":           remark,
-		"status":           consts.AssetStatusDraft,
-		"transcode_status": "none",
-		"created_at":       gtime.Now(),
-		"updated_at":       gtime.Now(),
-	}).InsertAndGetId()
+func (r *assetRepo) Create(ctx context.Context, title, coverUrl, remark string) (string, error) {
+	for i := 0; i < 8; i++ {
+		c, err := kit.NewPublicID()
+		if err != nil {
+			return "", err
+		}
+		exist, err := g.DB().Model("media_asset").Ctx(ctx).Where("code", c).One()
+		if err != nil {
+			return "", err
+		}
+		if !exist.IsEmpty() {
+			continue
+		}
+		_, err = g.DB().Model("media_asset").Ctx(ctx).Data(g.Map{
+			"code":             c,
+			"title":            title,
+			"cover_url":        coverUrl,
+			"remark":           remark,
+			"status":           consts.AssetStatusDraft,
+			"transcode_status": "none",
+			"created_at":       gtime.Now(),
+			"updated_at":       gtime.Now(),
+		}).Insert()
+		if err != nil {
+			return "", err
+		}
+		return c, nil
+	}
+	return "", errors.New("生成资产短码失败, 请重试")
 }
 
-func (r *assetRepo) Get(ctx context.Context, id int64) (*domain.Asset, error) {
-	row, err := g.DB().Model("media_asset").Ctx(ctx).Where("id", id).One()
+func (r *assetRepo) GetByCode(ctx context.Context, code string) (*domain.Asset, error) {
+	row, err := g.DB().Model("media_asset").Ctx(ctx).Where("code", code).One()
 	if err != nil {
 		return nil, err
 	}
@@ -72,6 +92,22 @@ func (r *assetRepo) Get(ctx context.Context, id int64) (*domain.Asset, error) {
 	}
 	a := mapAsset(row.Map())
 	return &a, nil
+}
+
+func (r *assetRepo) Delete(ctx context.Context, pk int64) error {
+	if pk <= 0 {
+		return errors.New("invalid asset pk")
+	}
+	return g.DB().Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
+		if _, err := tx.Model("site_asset_pick").Ctx(ctx).Where("asset_id", pk).Delete(); err != nil {
+			return err
+		}
+		if _, err := tx.Model("transcode_job").Ctx(ctx).Where("asset_id", pk).Delete(); err != nil {
+			return err
+		}
+		_, err := tx.Model("media_asset").Ctx(ctx).Where("id", pk).Delete()
+		return err
+	})
 }
 
 func (r *assetRepo) ListPicks(ctx context.Context, appKey string, page, size int) ([]domain.PickRecord, int, error) {
@@ -89,7 +125,7 @@ func (r *assetRepo) ListPicks(ctx context.Context, appKey string, page, size int
 	if err != nil {
 		return nil, 0, err
 	}
-	rows, err := m.Fields("p.asset_id, p.created_at as picked_at, a.title, a.cover_url, a.play_url, a.play_key, a.duration_sec").
+	rows, err := m.Fields("a.code, p.created_at as picked_at, a.title, a.cover_url, a.play_url, a.play_key, a.duration_sec").
 		OrderDesc("p.id").Page(page, size).All()
 	if err != nil {
 		return nil, 0, err
@@ -97,7 +133,7 @@ func (r *assetRepo) ListPicks(ctx context.Context, appKey string, page, size int
 	list := make([]domain.PickRecord, 0, len(rows))
 	for _, row := range rows {
 		list = append(list, domain.PickRecord{
-			AssetId:     row["asset_id"].Int64(),
+			Code:        row["code"].String(),
 			Title:       row["title"].String(),
 			CoverUrl:    row["cover_url"].String(),
 			PlayUrl:     row["play_url"].String(),
@@ -109,25 +145,26 @@ func (r *assetRepo) ListPicks(ctx context.Context, appKey string, page, size int
 	return list, total, nil
 }
 
-func (r *assetRepo) PickedSet(ctx context.Context, appKey string, assetIDs []int64) (map[int64]bool, error) {
-	out := map[int64]bool{}
-	if len(assetIDs) == 0 {
+func (r *assetRepo) PickedSet(ctx context.Context, appKey string, codes []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	if len(codes) == 0 {
 		return out, nil
 	}
-	rows, err := g.DB().Model("site_asset_pick").Ctx(ctx).
-		Where("app_key", appKey).WhereIn("asset_id", assetIDs).
-		Fields("asset_id").All()
+	rows, err := g.DB().Model("site_asset_pick p").Ctx(ctx).
+		LeftJoin("media_asset a", "a.id=p.asset_id").
+		Where("p.app_key", appKey).WhereIn("a.code", codes).
+		Fields("a.code").All()
 	if err != nil {
 		return nil, err
 	}
 	for _, row := range rows {
-		out[row["asset_id"].Int64()] = true
+		out[row["code"].String()] = true
 	}
 	return out, nil
 }
 
-func (r *assetRepo) Pick(ctx context.Context, appKey, siteCode string, assetID int64) (*domain.Asset, error) {
-	a, err := r.Get(ctx, assetID)
+func (r *assetRepo) Pick(ctx context.Context, appKey, siteCode, code string) (*domain.Asset, error) {
+	a, err := r.GetByCode(ctx, code)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +175,7 @@ func (r *assetRepo) Pick(ctx context.Context, appKey, siteCode string, assetID i
 		return nil, ErrAssetNotReady
 	}
 	exist, err := g.DB().Model("site_asset_pick").Ctx(ctx).
-		Where("app_key", appKey).Where("asset_id", assetID).One()
+		Where("app_key", appKey).Where("asset_id", a.Pk).One()
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +183,7 @@ func (r *assetRepo) Pick(ctx context.Context, appKey, siteCode string, assetID i
 		_, err = g.DB().Model("site_asset_pick").Ctx(ctx).Data(g.Map{
 			"app_key":    appKey,
 			"site_code":  siteCode,
-			"asset_id":   assetID,
+			"asset_id":   a.Pk,
 			"created_at": gtime.Now(),
 		}).Insert()
 		if err != nil {
@@ -156,8 +193,8 @@ func (r *assetRepo) Pick(ctx context.Context, appKey, siteCode string, assetID i
 	return a, nil
 }
 
-func (r *assetRepo) BindSource(ctx context.Context, id int64, bucket, key string) error {
-	_, err := g.DB().Model("media_asset").Ctx(ctx).Where("id", id).Data(g.Map{
+func (r *assetRepo) BindSource(ctx context.Context, pk int64, bucket, key string) error {
+	_, err := g.DB().Model("media_asset").Ctx(ctx).Where("id", pk).Data(g.Map{
 		"source_bucket": bucket,
 		"source_key":    key,
 		"updated_at":    gtime.Now(),
@@ -165,9 +202,9 @@ func (r *assetRepo) BindSource(ctx context.Context, id int64, bucket, key string
 	return err
 }
 
-func (r *assetRepo) MarkTranscoding(ctx context.Context, id int64, jobID, profile string) error {
+func (r *assetRepo) MarkTranscoding(ctx context.Context, pk int64, jobID, profile string) error {
 	return g.DB().Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
-		_, err := tx.Model("media_asset").Ctx(ctx).Where("id", id).Data(g.Map{
+		_, err := tx.Model("media_asset").Ctx(ctx).Where("id", pk).Data(g.Map{
 			"status":           consts.AssetStatusProcessing,
 			"transcode_status": "pending",
 			"transcode_job_id": jobID,
@@ -179,7 +216,7 @@ func (r *assetRepo) MarkTranscoding(ctx context.Context, id int64, jobID, profil
 		}
 		_, err = tx.Model("transcode_job").Ctx(ctx).Data(g.Map{
 			"job_id":     jobID,
-			"asset_id":   id,
+			"asset_id":   pk,
 			"profile":    profile,
 			"status":     "pending",
 			"created_at": gtime.Now(),
@@ -242,6 +279,9 @@ func (r *assetRepo) applyToAsset(ctx context.Context, assetID int64, res domain.
 		data["status"] = consts.AssetStatusReady
 		data["play_key"] = res.PlayKey
 		data["play_url"] = res.PlayURL
+		if res.CoverURL != "" {
+			data["cover_url"] = res.CoverURL
+		}
 		if res.DurationSec > 0 {
 			data["duration_sec"] = res.DurationSec
 		}
@@ -255,7 +295,8 @@ func (r *assetRepo) applyToAsset(ctx context.Context, assetID int64, res domain.
 
 func mapAsset(m g.Map) domain.Asset {
 	return domain.Asset{
-		Id:              g.NewVar(m["id"]).Int64(),
+		Pk:              g.NewVar(m["id"]).Int64(),
+		Code:            g.NewVar(m["code"]).String(),
 		Title:           g.NewVar(m["title"]).String(),
 		CoverUrl:        g.NewVar(m["cover_url"]).String(),
 		SourceBucket:    g.NewVar(m["source_bucket"]).String(),

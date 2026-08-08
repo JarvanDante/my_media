@@ -95,6 +95,72 @@ func (m *Minio) Stat(ctx context.Context, bucket, key string) error {
 	return err
 }
 
+// RemoveObject 删除单个对象；不存在视为成功。
+func (m *Minio) RemoveObject(ctx context.Context, bucket, key string) error {
+	if bucket == "" {
+		bucket = m.bucket
+	}
+	key = strings.TrimLeft(key, "/")
+	if key == "" {
+		return nil
+	}
+	err := m.client.RemoveObject(ctx, bucket, key, miniogo.RemoveObjectOptions{})
+	if err != nil && miniogo.ToErrorResponse(err).Code == "NoSuchKey" {
+		return nil
+	}
+	return err
+}
+
+// RemovePrefix 删除前缀下全部对象（用于 media/source/{code}/、media/hls/{code}/）。
+// 注意：minio-go 的 RemoveObjects 只回传失败，成功不会进 channel；计数需用 RemoveObjectsWithResult。
+func (m *Minio) RemovePrefix(ctx context.Context, bucket, prefix string) (int, error) {
+	if bucket == "" {
+		bucket = m.bucket
+	}
+	prefix = strings.TrimLeft(prefix, "/")
+	if prefix == "" {
+		return 0, fmt.Errorf("empty prefix")
+	}
+	if !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+
+	var keys []string
+	for obj := range m.client.ListObjects(ctx, bucket, miniogo.ListObjectsOptions{
+		Prefix:    prefix,
+		Recursive: true,
+	}) {
+		if obj.Err != nil {
+			return 0, obj.Err
+		}
+		if obj.Key == "" {
+			continue
+		}
+		keys = append(keys, obj.Key)
+	}
+	if len(keys) == 0 {
+		return 0, nil
+	}
+
+	toRemove := make(chan miniogo.ObjectInfo, 64)
+	go func() {
+		defer close(toRemove)
+		for _, key := range keys {
+			toRemove <- miniogo.ObjectInfo{Key: key}
+		}
+	}()
+
+	n := 0
+	for r := range m.client.RemoveObjectsWithResult(ctx, bucket, toRemove, miniogo.RemoveObjectsOptions{}) {
+		if r.Err != nil {
+			g.Log().Warningf(ctx, "minio remove %s/%s: %v", bucket, r.ObjectName, r.Err)
+			return n, r.Err
+		}
+		n++
+	}
+	return n, nil
+}
+
 // PublicURL 拼可访问地址。
 func (m *Minio) PublicURL(bucket, key string) string {
 	if bucket == "" {

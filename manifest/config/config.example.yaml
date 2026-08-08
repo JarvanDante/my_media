@@ -40,3 +40,4 @@ kafka:
 transcode:
   profile: "h264_hls"
   biz: "media"
+  cover_seek_sec: 8

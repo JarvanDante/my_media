@@ -3,12 +3,12 @@ package v1
 import "github.com/gogf/gf/v2/frame/g"
 
 type AssetItem struct {
-	Id          int64  `json:"id"`
+	Id          string `json:"id"` // 8 位短码
 	Title       string `json:"title"`
 	CoverUrl    string `json:"cover_url"`
 	PlayUrl     string `json:"play_url"`
 	DurationSec int    `json:"duration_sec"`
-	Picked      bool   `json:"picked"` // 当前站点是否已选用
+	Picked      bool   `json:"picked"`
 }
 
 type ListReq struct {
@@ -25,7 +25,7 @@ type ListRes struct {
 
 type DetailReq struct {
 	g.Meta `path:"/open/assets/{id}" method:"get" tags:"Open/Asset" summary:"媒资详情"`
-	Id     int64 `json:"id" in:"path" v:"required|min:1"`
+	Id     string `json:"id" in:"path" v:"required|length:8,8"`
 }
 
 type DetailRes struct {
@@ -35,11 +35,11 @@ type DetailRes struct {
 
 type PickReq struct {
 	g.Meta `path:"/open/assets/{id}/pick" method:"post" tags:"Open/Asset" summary:"选用媒资"`
-	Id     int64 `json:"id" in:"path" v:"required|min:1"`
+	Id     string `json:"id" in:"path" v:"required|length:8,8"`
 }
 
 type PickRes struct {
-	AssetId     int64  `json:"asset_id"`
+	Id          string `json:"id"`
 	Title       string `json:"title"`
 	CoverUrl    string `json:"cover_url"`
 	PlayUrl     string `json:"play_url"`
@@ -54,7 +54,7 @@ type PickListReq struct {
 }
 
 type PickListItem struct {
-	AssetId     int64  `json:"asset_id"`
+	Id          string `json:"id"`
 	Title       string `json:"title"`
 	CoverUrl    string `json:"cover_url"`
 	PlayUrl     string `json:"play_url"`

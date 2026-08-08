@@ -10,14 +10,15 @@ import (
 
 type Asset interface {
 	List(ctx context.Context, f domain.ListFilter) (list []domain.Asset, total int, err error)
-	Create(ctx context.Context, title, coverUrl, remark string) (id int64, err error)
-	Get(ctx context.Context, id int64) (*domain.Asset, error)
-	Pick(ctx context.Context, appKey, siteCode string, assetID int64) (*domain.Asset, error)
+	Create(ctx context.Context, title, coverUrl, remark string) (code string, err error)
+	Get(ctx context.Context, code string) (*domain.Asset, error)
+	Delete(ctx context.Context, code string) (deletedObjects int, err error)
+	Pick(ctx context.Context, appKey, siteCode, code string) (*domain.Asset, error)
 
-	PresignUpload(ctx context.Context, assetID int64, filename string) (*v1.UploadURLRes, error)
-	TriggerTranscode(ctx context.Context, assetID int64) (jobID string, err error)
+	PresignUpload(ctx context.Context, code, filename string) (*v1.UploadURLRes, error)
+	TriggerTranscode(ctx context.Context, code string, coverSeekSec int) (jobID string, err error)
 	HandleTranscodeResult(ctx context.Context, msg transcode.ResultMessage) error
 
 	ListPicks(ctx context.Context, appKey string, page, size int) (list []domain.PickRecord, total int, err error)
-	PickedSet(ctx context.Context, appKey string, assetIDs []int64) (map[int64]bool, error)
+	PickedSet(ctx context.Context, appKey string, codes []string) (map[string]bool, error)
 }
