@@ -1,2 +1,4 @@
-# my_media
-媒资中心
+# GoFrame Template For SingleRepo
+
+Quick Start: 
+- https://goframe.org/quick
