@@ -27,11 +27,20 @@ func (c *Open) List(ctx context.Context, req *v1.ListReq) (res *v1.ListRes, err 
 	if err != nil {
 		return nil, err
 	}
+	ids := make([]int64, 0, len(list))
+	for _, a := range list {
+		ids = append(ids, a.Id)
+	}
+	appKey := g.RequestFromCtx(ctx).GetCtxVar("app_key").String()
+	picked, err := c.svc.PickedSet(ctx, appKey, ids)
+	if err != nil {
+		return nil, err
+	}
 	res = &v1.ListRes{Total: total, List: make([]v1.AssetItem, 0, len(list))}
 	for _, a := range list {
 		res.List = append(res.List, v1.AssetItem{
 			Id: a.Id, Title: a.Title, CoverUrl: a.CoverUrl,
-			PlayUrl: a.PlayUrl, DurationSec: a.DurationSec,
+			PlayUrl: a.PlayUrl, DurationSec: a.DurationSec, Picked: picked[a.Id],
 		})
 	}
 	return res, nil
@@ -45,10 +54,15 @@ func (c *Open) Detail(ctx context.Context, req *v1.DetailReq) (res *v1.DetailRes
 	if a == nil || a.Status != 2 {
 		return nil, gerror.NewCode(errcode.CodeNotFound, "资产不可用")
 	}
+	appKey := g.RequestFromCtx(ctx).GetCtxVar("app_key").String()
+	picked, err := c.svc.PickedSet(ctx, appKey, []int64{a.Id})
+	if err != nil {
+		return nil, err
+	}
 	return &v1.DetailRes{
 		AssetItem: v1.AssetItem{
 			Id: a.Id, Title: a.Title, CoverUrl: a.CoverUrl,
-			PlayUrl: a.PlayUrl, DurationSec: a.DurationSec,
+			PlayUrl: a.PlayUrl, DurationSec: a.DurationSec, Picked: picked[a.Id],
 		},
 		PlayKey: a.PlayKey,
 	}, nil
@@ -68,5 +82,24 @@ func (c *Open) Pick(ctx context.Context, req *v1.PickReq) (res *v1.PickRes, err 
 	if a == nil {
 		return nil, gerror.NewCode(errcode.CodeNotFound, "资产不存在")
 	}
-	return &v1.PickRes{AssetId: a.Id, PlayUrl: a.PlayUrl}, nil
+	return &v1.PickRes{
+		AssetId: a.Id, Title: a.Title, CoverUrl: a.CoverUrl,
+		PlayUrl: a.PlayUrl, PlayKey: a.PlayKey, DurationSec: a.DurationSec,
+	}, nil
+}
+
+func (c *Open) PickList(ctx context.Context, req *v1.PickListReq) (res *v1.PickListRes, err error) {
+	appKey := g.RequestFromCtx(ctx).GetCtxVar("app_key").String()
+	list, total, err := c.svc.ListPicks(ctx, appKey, req.Page, req.Size)
+	if err != nil {
+		return nil, err
+	}
+	res = &v1.PickListRes{Total: total, List: make([]v1.PickListItem, 0, len(list))}
+	for _, x := range list {
+		res.List = append(res.List, v1.PickListItem{
+			AssetId: x.AssetId, Title: x.Title, CoverUrl: x.CoverUrl,
+			PlayUrl: x.PlayUrl, PlayKey: x.PlayKey, DurationSec: x.DurationSec, PickedAt: x.PickedAt,
+		})
+	}
+	return res, nil
 }

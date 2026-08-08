@@ -5,6 +5,9 @@ import (
 
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/net/ghttp"
+
+	"github.com/JarvanDante/my_media/internal/dao"
+	"github.com/JarvanDante/my_media/internal/shared/authz"
 )
 
 // CORS 简易跨域
@@ -13,7 +16,7 @@ func CORS(r *ghttp.Request) {
 	r.Middleware.Next()
 }
 
-// AdminToken 总后台调用鉴权(骨架: 比对配置 security.admin_token)
+// AdminToken 总后台调用鉴权
 func AdminToken(r *ghttp.Request) {
 	want := g.Cfg().MustGet(r.Context(), "security.admin_token").String()
 	got := r.Header.Get("X-Admin-Token")
@@ -25,7 +28,7 @@ func AdminToken(r *ghttp.Request) {
 	r.Middleware.Next()
 }
 
-// AppKey 子站开放 API 鉴权(骨架: 查 paas_client 表)
+// AppKey 子站开放 API：查 paas_client，密钥哈希/明文兼容 + 恒定时间比较
 func AppKey(r *ghttp.Request) {
 	key := r.Header.Get("X-App-Key")
 	secret := r.Header.Get("X-App-Secret")
@@ -34,18 +37,18 @@ func AppKey(r *ghttp.Request) {
 		r.Response.WriteJsonExit(g.Map{"code": 401, "message": "missing app credentials", "data": nil})
 		return
 	}
-	one, err := g.DB().Model("paas_client").
-		Where("app_key", key).
-		Where("app_secret", secret).
-		Where("status", 1).
-		One()
-	if err != nil || one.IsEmpty() {
+	cli, err := dao.NewClientRepo().FindActive(r.Context(), key)
+	if err != nil || cli == nil || !authz.MatchSecret(secret, cli.AppSecret, cli.SecretHashed == 1) {
 		r.Response.WriteStatus(http.StatusUnauthorized)
 		r.Response.WriteJsonExit(g.Map{"code": 401, "message": "invalid app credentials", "data": nil})
 		return
 	}
+	// 明文旧数据命中后静默升级为哈希
+	if cli.SecretHashed == 0 {
+		_ = dao.NewClientRepo().Upsert(r.Context(), key, secret, cli.SiteCode, cli.Remark, 1)
+	}
 	r.SetCtxVar("app_key", key)
-	r.SetCtxVar("site_code", one["site_code"].String())
+	r.SetCtxVar("site_code", cli.SiteCode)
 	r.Middleware.Next()
 }
 

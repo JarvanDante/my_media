@@ -17,4 +17,7 @@ type Asset interface {
 	PresignUpload(ctx context.Context, assetID int64, filename string) (*v1.UploadURLRes, error)
 	TriggerTranscode(ctx context.Context, assetID int64) (jobID string, err error)
 	HandleTranscodeResult(ctx context.Context, msg transcode.ResultMessage) error
+
+	ListPicks(ctx context.Context, appKey string, page, size int) (list []domain.PickRecord, total int, err error)
+	PickedSet(ctx context.Context, appKey string, assetIDs []int64) (map[int64]bool, error)
 }

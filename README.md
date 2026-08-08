@@ -45,6 +45,8 @@ make dev
 **已验收完整链路**见 [docs/m1-pipeline.md](docs/m1-pipeline.md)：  
 `上传 → Kafka → my_transcode → HLS → 详情 status=2/ready → 浏览器播 play_url`。
 
+**M2 开放选用 / 凭证同步**见 [docs/m2-open-client.md](docs/m2-open-client.md)。
+
 依赖：MinIO、Kafka、`my_transcode` Worker 已启动。Header 均带 `X-Admin-Token`。
 
 ```bash

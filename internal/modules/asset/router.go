@@ -15,5 +15,5 @@ func RegisterAdmin(group *ghttp.RouterGroup, svc service.Asset) {
 
 func RegisterOpen(group *ghttp.RouterGroup, svc service.Asset) {
 	ctrl := openc.NewOpen(svc)
-	group.Bind(ctrl.List, ctrl.Detail, ctrl.Pick)
+	group.Bind(ctrl.List, ctrl.Detail, ctrl.Pick, ctrl.PickList)
 }

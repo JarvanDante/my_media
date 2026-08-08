@@ -11,6 +11,7 @@ import (
 	"github.com/JarvanDante/my_media/internal/dao"
 	"github.com/JarvanDante/my_media/internal/modules/asset"
 	"github.com/JarvanDante/my_media/internal/modules/asset/logic"
+	"github.com/JarvanDante/my_media/internal/modules/client"
 	"github.com/JarvanDante/my_media/internal/modules/health"
 	"github.com/JarvanDante/my_media/internal/shared/middleware"
 	"github.com/JarvanDante/my_media/internal/shared/mq"
@@ -44,9 +45,11 @@ var Main = gcmd.Command{
 
 		health.Register(s.Group("/"))
 
+		clientRepo := dao.NewClientRepo()
 		s.Group("/", func(group *ghttp.RouterGroup) {
 			group.Middleware(middleware.AdminToken)
 			asset.RegisterAdmin(group, svc)
+			client.RegisterAdmin(group, clientRepo)
 		})
 
 		s.Group("/", func(group *ghttp.RouterGroup) {

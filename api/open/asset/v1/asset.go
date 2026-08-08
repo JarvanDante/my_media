@@ -8,6 +8,7 @@ type AssetItem struct {
 	CoverUrl    string `json:"cover_url"`
 	PlayUrl     string `json:"play_url"`
 	DurationSec int    `json:"duration_sec"`
+	Picked      bool   `json:"picked"` // 当前站点是否已选用
 }
 
 type ListReq struct {
@@ -38,6 +39,31 @@ type PickReq struct {
 }
 
 type PickRes struct {
-	AssetId int64  `json:"asset_id"`
-	PlayUrl string `json:"play_url"`
+	AssetId     int64  `json:"asset_id"`
+	Title       string `json:"title"`
+	CoverUrl    string `json:"cover_url"`
+	PlayUrl     string `json:"play_url"`
+	PlayKey     string `json:"play_key"`
+	DurationSec int    `json:"duration_sec"`
+}
+
+type PickListReq struct {
+	g.Meta `path:"/open/picks" method:"get" tags:"Open/Asset" summary:"本站已选用列表"`
+	Page   int `json:"page" d:"1"`
+	Size   int `json:"size" d:"20"`
+}
+
+type PickListItem struct {
+	AssetId     int64  `json:"asset_id"`
+	Title       string `json:"title"`
+	CoverUrl    string `json:"cover_url"`
+	PlayUrl     string `json:"play_url"`
+	PlayKey     string `json:"play_key"`
+	DurationSec int    `json:"duration_sec"`
+	PickedAt    string `json:"picked_at"`
+}
+
+type PickListRes struct {
+	List  []PickListItem `json:"list"`
+	Total int            `json:"total"`
 }

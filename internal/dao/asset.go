@@ -74,6 +74,58 @@ func (r *assetRepo) Get(ctx context.Context, id int64) (*domain.Asset, error) {
 	return &a, nil
 }
 
+func (r *assetRepo) ListPicks(ctx context.Context, appKey string, page, size int) ([]domain.PickRecord, int, error) {
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 || size > 100 {
+		size = 20
+	}
+	m := g.DB().Model("site_asset_pick p").Ctx(ctx).
+		LeftJoin("media_asset a", "a.id=p.asset_id").
+		Where("p.app_key", appKey).
+		Where("a.status", consts.AssetStatusReady)
+	total, err := m.Clone().Count()
+	if err != nil {
+		return nil, 0, err
+	}
+	rows, err := m.Fields("p.asset_id, p.created_at as picked_at, a.title, a.cover_url, a.play_url, a.play_key, a.duration_sec").
+		OrderDesc("p.id").Page(page, size).All()
+	if err != nil {
+		return nil, 0, err
+	}
+	list := make([]domain.PickRecord, 0, len(rows))
+	for _, row := range rows {
+		list = append(list, domain.PickRecord{
+			AssetId:     row["asset_id"].Int64(),
+			Title:       row["title"].String(),
+			CoverUrl:    row["cover_url"].String(),
+			PlayUrl:     row["play_url"].String(),
+			PlayKey:     row["play_key"].String(),
+			DurationSec: row["duration_sec"].Int(),
+			PickedAt:    row["picked_at"].String(),
+		})
+	}
+	return list, total, nil
+}
+
+func (r *assetRepo) PickedSet(ctx context.Context, appKey string, assetIDs []int64) (map[int64]bool, error) {
+	out := map[int64]bool{}
+	if len(assetIDs) == 0 {
+		return out, nil
+	}
+	rows, err := g.DB().Model("site_asset_pick").Ctx(ctx).
+		Where("app_key", appKey).WhereIn("asset_id", assetIDs).
+		Fields("asset_id").All()
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		out[row["asset_id"].Int64()] = true
+	}
+	return out, nil
+}
+
 func (r *assetRepo) Pick(ctx context.Context, appKey, siteCode string, assetID int64) (*domain.Asset, error) {
 	a, err := r.Get(ctx, assetID)
 	if err != nil {

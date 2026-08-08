@@ -38,7 +38,7 @@
 |------|------|
 | M0 | 健康检查、表结构、API 契约、协议包、路由占位 |
 | M1（已实现） | 资产 CRUD、MinIO 预签名上传、Kafka 投递 Job、消费 Result 回写 |
-| M2 | `paas_client` 与总后台凭证同步加固、选用联调 |
+| M2（已实现） | `paas_client` 同步/哈希加固、`/open` 选用联调；见 [m2-open-client.md](./m2-open-client.md) |
 | M3 | 总后台页面联调、配额/审计 |
 
 ## M1 调用顺序

@@ -15,7 +15,8 @@ database:
     link: "pgsql:postgres:654321@tcp(127.0.0.1:5432)/my_media?sslmode=disable"
 
 security:
-  admin_token: "dev-admin-token-change-me"
+  # 本地请用 openssl rand -hex 32 生成后写入 config.yaml（勿把真实值提交仓库）
+  admin_token: "change-me-with-openssl-rand-hex-32"
 
 minio:
   # Docker 常见映射 19000:9000，本机用宿主机端口

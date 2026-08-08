@@ -124,6 +124,14 @@ func (s *sAsset) TriggerTranscode(ctx context.Context, assetID int64) (string, e
 	return jobID, nil
 }
 
+func (s *sAsset) ListPicks(ctx context.Context, appKey string, page, size int) ([]domain.PickRecord, int, error) {
+	return s.repo.ListPicks(ctx, appKey, page, size)
+}
+
+func (s *sAsset) PickedSet(ctx context.Context, appKey string, assetIDs []int64) (map[int64]bool, error) {
+	return s.repo.PickedSet(ctx, appKey, assetIDs)
+}
+
 func (s *sAsset) HandleTranscodeResult(ctx context.Context, msg transcode.ResultMessage) error {
 	if msg.Biz != "" && msg.Biz != transcode.BizMedia {
 		return nil
