@@ -59,11 +59,15 @@ func (c *Admin) Detail(ctx context.Context, req *v1.DetailReq) (res *v1.DetailRe
 }
 
 func (c *Admin) UploadURL(ctx context.Context, req *v1.UploadURLReq) (res *v1.UploadURLRes, err error) {
-	return nil, gerror.NewCode(errcode.CodeNotImpl, "预签名上传待 M1 接线 MinIO")
+	return c.svc.PresignUpload(ctx, req.Id, req.Filename)
 }
 
 func (c *Admin) Transcode(ctx context.Context, req *v1.TranscodeReq) (res *v1.TranscodeRes, err error) {
-	return nil, gerror.NewCode(errcode.CodeNotImpl, "转码投递待 M1 接线 Kafka→my_transcode")
+	jobID, err := c.svc.TriggerTranscode(ctx, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	return &v1.TranscodeRes{JobId: jobID}, nil
 }
 
 func toAdminItem(a domain.Asset) v1.AssetItem {

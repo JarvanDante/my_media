@@ -40,6 +40,31 @@ make dev
 # 管理端示例: curl -H 'X-Admin-Token: dev-admin-token-change-me' http://127.0.0.1:8004/admin/assets
 ```
 
+## M1 联调（上传 → 转码）
+
+**已验收完整链路**见 [docs/m1-pipeline.md](docs/m1-pipeline.md)：  
+`上传 → Kafka → my_transcode → HLS → 详情 status=2/ready → 浏览器播 play_url`。
+
+依赖：MinIO、Kafka、`my_transcode` Worker 已启动。Header 均带 `X-Admin-Token`。
+
+```bash
+# 1) 创建
+curl -s -X POST http://127.0.0.1:8004/admin/assets \
+  -H 'X-Admin-Token: dev-admin-token-change-me' -H 'Content-Type: application/json' \
+  -d '{"title":"demo"}'
+
+# 2) 预签名（把 ID 换掉）
+curl -s -X POST http://127.0.0.1:8004/admin/assets/1/upload-url \
+  -H 'X-Admin-Token: dev-admin-token-change-me' -H 'Content-Type: application/json' \
+  -d '{"filename":"a.mp4"}'
+# 对返回的 upload_url 执行: curl -X PUT --upload-file ./a.mp4 "<upload_url>"
+
+# 3) 触发转码
+curl -s -X POST http://127.0.0.1:8004/admin/assets/1/transcode \
+  -H 'X-Admin-Token: dev-admin-token-change-me'
+# 完成后 GET 详情，status=2 且 play_url 有值
+```
+
 ## 目录
 
 ```text

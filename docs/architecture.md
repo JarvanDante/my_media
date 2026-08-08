@@ -36,7 +36,16 @@
 
 | 阶段 | 内容 |
 |------|------|
-| M0（本骨架） | 健康检查、表结构、API 契约、协议包、路由占位 |
-| M1 | 资产 CRUD、预签名上传、投递 Job、消费 Result |
-| M2 | `paas_client` 校验、子站列表/选用 |
+| M0 | 健康检查、表结构、API 契约、协议包、路由占位 |
+| M1（已实现） | 资产 CRUD、MinIO 预签名上传、Kafka 投递 Job、消费 Result 回写 |
+| M2 | `paas_client` 与总后台凭证同步加固、选用联调 |
 | M3 | 总后台页面联调、配额/审计 |
+
+## M1 调用顺序
+
+1. `POST /admin/assets` 创建元数据 → 得 `id`
+2. `POST /admin/assets/{id}/upload-url` → 用返回的 `upload_url` **PUT** 原片
+3. `POST /admin/assets/{id}/transcode` → 得 `job_id`（需 `my_transcode` 消费 jobs）
+4. Worker 完成后发 Result；本服务消费后 `status=2` 且写入 `play_url`
+
+**已验收链路说明（时序 / 验收标准 / 踩坑）→ [m1-pipeline.md](./m1-pipeline.md)**

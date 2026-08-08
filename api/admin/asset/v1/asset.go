@@ -53,14 +53,17 @@ type DetailRes struct {
 }
 
 type UploadURLReq struct {
-	g.Meta `path:"/admin/assets/{id}/upload-url" method:"post" tags:"Admin/Asset" summary:"预签名上传(M1)"`
-	Id     int64 `json:"id" in:"path" v:"required|min:1"`
+	g.Meta   `path:"/admin/assets/{id}/upload-url" method:"post" tags:"Admin/Asset" summary:"预签名上传(M1)"`
+	Id       int64  `json:"id" in:"path" v:"required|min:1"`
+	Filename string `json:"filename" d:"video.mp4"` // 用于生成扩展名
 }
 
 type UploadURLRes struct {
 	UploadUrl string `json:"upload_url"`
+	Method    string `json:"method"` // PUT
 	Bucket    string `json:"bucket"`
 	Key       string `json:"key"`
+	ExpireSec int    `json:"expire_sec"`
 }
 
 type TranscodeReq struct {

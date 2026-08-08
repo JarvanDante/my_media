@@ -10,8 +10,11 @@ import (
 
 	"github.com/JarvanDante/my_media/internal/dao"
 	"github.com/JarvanDante/my_media/internal/modules/asset"
+	"github.com/JarvanDante/my_media/internal/modules/asset/logic"
 	"github.com/JarvanDante/my_media/internal/modules/health"
 	"github.com/JarvanDante/my_media/internal/shared/middleware"
+	"github.com/JarvanDante/my_media/internal/shared/mq"
+	"github.com/JarvanDante/my_media/internal/shared/storage"
 )
 
 // Main 媒资中心 API(:8004)。
@@ -19,28 +22,40 @@ var Main = gcmd.Command{
 	Name:  "mediaapi",
 	Brief: "媒资中心(PaaS) API",
 	Func: func(ctx context.Context, parser *gcmd.Parser) error {
+		store, err := storage.NewMinio(ctx)
+		if err != nil {
+			g.Log().Warningf(ctx, "minio init failed: %v (upload/transcode 将不可用)", err)
+		}
+		bus := mq.NewBus(ctx)
+		repo := dao.NewAssetRepo()
+		svc := logic.New(repo, store, bus)
+
+		// 后台消费转码结果
+		go func() {
+			bg := context.Background()
+			if err := bus.ConsumeResults(bg, svc.HandleTranscodeResult); err != nil {
+				g.Log().Errorf(bg, "kafka result consumer stopped: %v", err)
+			}
+		}()
+
 		s := g.Server()
 		s.Use(middleware.CORS, ghttp.MiddlewareHandlerResponse)
 		s.BindStatusHandler(404, middleware.NotFound)
 
-		repo := dao.NewAssetRepo()
-
-		// 探活(无鉴权)
 		health.Register(s.Group("/"))
 
-		// 总后台
 		s.Group("/", func(group *ghttp.RouterGroup) {
 			group.Middleware(middleware.AdminToken)
-			asset.RegisterAdmin(group, repo)
+			asset.RegisterAdmin(group, svc)
 		})
 
-		// 子站开放
 		s.Group("/", func(group *ghttp.RouterGroup) {
 			group.Middleware(middleware.AppKey)
-			asset.RegisterOpen(group, repo)
+			asset.RegisterOpen(group, svc)
 		})
 
 		s.Run()
+		_ = bus.Close()
 		return nil
 	},
 }

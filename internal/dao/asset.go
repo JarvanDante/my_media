@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 
+	"github.com/gogf/gf/v2/database/gdb"
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/os/gtime"
 
+	"github.com/JarvanDante/my_media/internal/consts"
 	"github.com/JarvanDante/my_media/internal/modules/asset/domain"
+	"github.com/JarvanDante/my_media/internal/shared/transcode"
 )
 
 var ErrAssetNotReady = errors.New("asset not ready")
@@ -28,7 +31,7 @@ func (r *assetRepo) List(ctx context.Context, f domain.ListFilter) ([]domain.Ass
 		m = m.WhereLike("title", "%"+f.Keyword+"%")
 	}
 	if f.ReadyOnly {
-		m = m.Where("status", 2)
+		m = m.Where("status", consts.AssetStatusReady)
 	} else if f.Status >= 0 {
 		m = m.Where("status", f.Status)
 	}
@@ -52,7 +55,7 @@ func (r *assetRepo) Create(ctx context.Context, title, coverUrl, remark string) 
 		"title":            title,
 		"cover_url":        coverUrl,
 		"remark":           remark,
-		"status":           0,
+		"status":           consts.AssetStatusDraft,
 		"transcode_status": "none",
 		"created_at":       gtime.Now(),
 		"updated_at":       gtime.Now(),
@@ -79,7 +82,7 @@ func (r *assetRepo) Pick(ctx context.Context, appKey, siteCode string, assetID i
 	if a == nil {
 		return nil, nil
 	}
-	if a.Status != 2 {
+	if a.Status != consts.AssetStatusReady {
 		return nil, ErrAssetNotReady
 	}
 	exist, err := g.DB().Model("site_asset_pick").Ctx(ctx).
@@ -99,6 +102,103 @@ func (r *assetRepo) Pick(ctx context.Context, appKey, siteCode string, assetID i
 		}
 	}
 	return a, nil
+}
+
+func (r *assetRepo) BindSource(ctx context.Context, id int64, bucket, key string) error {
+	_, err := g.DB().Model("media_asset").Ctx(ctx).Where("id", id).Data(g.Map{
+		"source_bucket": bucket,
+		"source_key":    key,
+		"updated_at":    gtime.Now(),
+	}).Update()
+	return err
+}
+
+func (r *assetRepo) MarkTranscoding(ctx context.Context, id int64, jobID, profile string) error {
+	return g.DB().Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
+		_, err := tx.Model("media_asset").Ctx(ctx).Where("id", id).Data(g.Map{
+			"status":           consts.AssetStatusProcessing,
+			"transcode_status": "pending",
+			"transcode_job_id": jobID,
+			"transcode_error":  "",
+			"updated_at":       gtime.Now(),
+		}).Update()
+		if err != nil {
+			return err
+		}
+		_, err = tx.Model("transcode_job").Ctx(ctx).Data(g.Map{
+			"job_id":     jobID,
+			"asset_id":   id,
+			"profile":    profile,
+			"status":     "pending",
+			"created_at": gtime.Now(),
+		}).Insert()
+		return err
+	})
+}
+
+func (r *assetRepo) ApplyTranscodeResult(ctx context.Context, res domain.TranscodeResult) error {
+	if res.JobID == "" {
+		return nil
+	}
+	job, err := g.DB().Model("transcode_job").Ctx(ctx).Where("job_id", res.JobID).One()
+	if err != nil {
+		return err
+	}
+	var assetID int64
+	if !job.IsEmpty() {
+		assetID = job["asset_id"].Int64()
+		jobData := g.Map{
+			"status": res.Status,
+			"error":  res.Error,
+		}
+		if res.PlayKey != "" {
+			jobData["play_key"] = res.PlayKey
+		}
+		if res.PlayURL != "" {
+			jobData["play_url"] = res.PlayURL
+		}
+		if res.Status == transcode.StatusReady || res.Status == transcode.StatusFailed {
+			jobData["finished_at"] = gtime.Now()
+		}
+		if _, err := g.DB().Model("transcode_job").Ctx(ctx).Where("job_id", res.JobID).Data(jobData).Update(); err != nil {
+			return err
+		}
+	} else {
+		asset, err := g.DB().Model("media_asset").Ctx(ctx).Where("transcode_job_id", res.JobID).One()
+		if err != nil {
+			return err
+		}
+		if asset.IsEmpty() {
+			return nil
+		}
+		assetID = asset["id"].Int64()
+	}
+	return r.applyToAsset(ctx, assetID, res)
+}
+
+func (r *assetRepo) applyToAsset(ctx context.Context, assetID int64, res domain.TranscodeResult) error {
+	data := g.Map{
+		"transcode_status": res.Status,
+		"transcode_error":  res.Error,
+		"updated_at":       gtime.Now(),
+	}
+	switch res.Status {
+	case transcode.StatusProcessing:
+		data["status"] = consts.AssetStatusProcessing
+		data["transcode_status"] = "processing"
+	case transcode.StatusReady:
+		data["status"] = consts.AssetStatusReady
+		data["play_key"] = res.PlayKey
+		data["play_url"] = res.PlayURL
+		if res.DurationSec > 0 {
+			data["duration_sec"] = res.DurationSec
+		}
+		data["transcode_error"] = ""
+	case transcode.StatusFailed:
+		data["status"] = consts.AssetStatusFailed
+	}
+	_, err := g.DB().Model("media_asset").Ctx(ctx).Where("id", assetID).Data(data).Update()
+	return err
 }
 
 func mapAsset(m g.Map) domain.Asset {

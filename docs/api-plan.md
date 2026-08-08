@@ -12,12 +12,12 @@
 
 | 方法 | 路径 | 说明 | 阶段 |
 |------|------|------|------|
-| GET | `/admin/assets` | 媒资池列表 | M1 |
-| POST | `/admin/assets` | 创建资产元数据 | M1 |
-| GET | `/admin/assets/{id}` | 详情 | M1 |
-| POST | `/admin/assets/{id}/upload-url` | 预签名上传 | M1 |
-| POST | `/admin/assets/{id}/transcode` | 触发转码 | M1 |
-| PUT | `/admin/assets/{id}` | 更新标题/封面/上下架 | M1 |
+| GET | `/admin/assets` | 媒资池列表 | ✅ |
+| POST | `/admin/assets` | 创建资产元数据 | ✅ |
+| GET | `/admin/assets/{id}` | 详情 | ✅ |
+| POST | `/admin/assets/{id}/upload-url` | MinIO PUT 预签名 | ✅ M1 |
+| POST | `/admin/assets/{id}/transcode` | 投递 Kafka Job | ✅ M1 |
+| PUT | `/admin/assets/{id}` | 更新标题/封面/上下架 | 待做 |
 
 ## 子站开放 `/open`（`X-App-Key` / `X-App-Secret`）
 

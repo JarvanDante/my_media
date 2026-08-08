@@ -18,14 +18,18 @@ security:
   admin_token: "dev-admin-token-change-me"
 
 minio:
-  endpoint: "127.0.0.1:9000"
+  # Docker 常见映射 19000:9000，本机用宿主机端口
+  endpoint: "127.0.0.1:19000"
   access_key: "minioadmin"
   secret_key: "minioadmin"
   bucket: "my-media"
   use_ssl: false
-  public_base: "http://127.0.0.1:9000/my-media"
+  # 公开访问根(不含 key); 也可写成 http://127.0.0.1:19000/my-media
+  public_base: "http://127.0.0.1:19000"
+  presign_expire_sec: 7200
 
 kafka:
+  enabled: true
   brokers:
     - "127.0.0.1:9092"
   topic_jobs: "media.transcode.jobs"
