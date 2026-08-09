@@ -1,0 +1,41 @@
+# Docker 容器内配置（mydocker / jarven）
+# MinIO 预签名给浏览器用：endpoint 走宿主机映射端口，避免签出 minio:9000
+
+server:
+  address:     ":8004"
+  openapiPath: "/api.json"
+  swaggerPath: "/swagger"
+
+logger:
+  level: "all"
+  stdout: true
+
+database:
+  default:
+    link: "pgsql:postgres:654321@tcp(postgres:5432)/my_media?sslmode=disable"
+
+security:
+  admin_token: "488ac147a8b24d2b0541b24f4fdfb5f8b10c20129f6b46fcce6d2091094e872a"
+
+minio:
+  # 与浏览器同一可达地址，保证预签名 Host 可直传
+  endpoint: "host.docker.internal:19000"
+  access_key: "minioadmin"
+  secret_key: "minioadmin123"
+  bucket: "my-media"
+  use_ssl: false
+  public_base: "http://127.0.0.1:19000"
+  presign_expire_sec: 7200
+
+kafka:
+  enabled: true
+  brokers:
+    - "kafka:29092"
+  topic_jobs: "media.transcode.jobs"
+  topic_results: "media.transcode.results"
+  group: "my_media"
+
+transcode:
+  profile: "h264_hls"
+  biz: "media"
+  cover_seek_sec: 8

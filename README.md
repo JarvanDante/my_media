@@ -40,6 +40,17 @@ make dev
 # 管理端示例: curl -H 'X-Admin-Token: dev-admin-token-change-me' http://127.0.0.1:8004/admin/assets
 ```
 
+## Docker 服务（mydocker）
+
+```bash
+make migrate
+make docker-up        # 构建并启动 :8004
+make docker-rebuild   # 改代码后重建
+make docker-logs
+```
+
+配置：`manifest/config/config.docker.yaml`（PG/Kafka 走容器网，MinIO 预签名走 `host.docker.internal:19000`）。
+
 ## M1 联调（上传 → 转码）
 
 **已验收完整链路**见 [docs/m1-pipeline.md](docs/m1-pipeline.md)：  
