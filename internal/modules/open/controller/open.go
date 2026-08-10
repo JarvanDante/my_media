@@ -137,6 +137,6 @@ func (c *Open) PlayToken(ctx context.Context, req *v1.PlayTokenReq) (res *v1.Pla
 	if p, _ := dao.NewPlayRepo().PolicyGet(ctx, siteCode); p != nil && p.Status == 1 && p.TokenTtlSec > 0 {
 		ttl = int64(p.TokenTtlSec)
 	}
-	playURL, exp := playsign.SignURL(a.Code, siteCode, ttl, req.PreviewSec, req.ClientIp)
+	playURL, exp := playsign.SignURL(a.Code, siteCode, ttl, req.PreviewSec, req.ClientIp, a.PlayUrl)
 	return &v1.PlayTokenRes{PlayUrl: playURL, ExpiresAt: exp}, nil
 }

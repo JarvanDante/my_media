@@ -19,3 +19,10 @@ type PlayStatDaily struct {
 	Plays     int64       `json:"plays"     orm:"plays"`
 	SegReqs   int64       `json:"segReqs"   orm:"seg_reqs"`
 }
+
+type PlayRevoke struct {
+	SiteCode  string      `json:"siteCode"  orm:"site_code"`
+	AssetCode string      `json:"assetCode" orm:"asset_code"`
+	NotBefore int64       `json:"notBefore" orm:"not_before"`
+	UpdatedAt *gtime.Time `json:"updatedAt" orm:"updated_at"`
+}

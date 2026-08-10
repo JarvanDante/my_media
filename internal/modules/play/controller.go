@@ -97,3 +97,48 @@ func (c *Controller) GwStatsIngest(ctx context.Context, req *v1.GwStatsIngestReq
 	}
 	return &v1.GwStatsIngestRes{Accepted: n}, nil
 }
+
+// ---- M3-2 链接失效闸 ----
+
+func toRevoke(p *entity.PlayRevoke) v1.RevokeItem {
+	updated := ""
+	if p.UpdatedAt != nil {
+		updated = p.UpdatedAt.Format("Y-m-d H:i:s")
+	}
+	return v1.RevokeItem{
+		SiteCode: p.SiteCode, AssetCode: p.AssetCode,
+		NotBefore: p.NotBefore, UpdatedAt: updated,
+	}
+}
+
+func (c *Controller) RevokeList(ctx context.Context, req *v1.RevokeListReq) (res *v1.RevokeListRes, err error) {
+	list, err := c.repo.RevokeList(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]v1.RevokeItem, 0, len(list))
+	for _, p := range list {
+		out = append(out, toRevoke(p))
+	}
+	return &v1.RevokeListRes{List: out}, nil
+}
+
+func (c *Controller) Revoke(ctx context.Context, req *v1.RevokeReq) (res *v1.RevokeRes, err error) {
+	nb := time.Now().Unix()
+	if err = c.repo.RevokeSet(ctx, req.SiteCode, req.AssetCode, nb); err != nil {
+		return nil, err
+	}
+	return &v1.RevokeRes{NotBefore: nb}, nil
+}
+
+func (c *Controller) GwRevokes(ctx context.Context, req *v1.GwRevokesReq) (res *v1.GwRevokesRes, err error) {
+	list, err := c.repo.RevokeList(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]v1.RevokeItem, 0, len(list))
+	for _, p := range list {
+		out = append(out, toRevoke(p))
+	}
+	return &v1.GwRevokesRes{List: out}, nil
+}

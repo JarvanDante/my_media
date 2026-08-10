@@ -82,13 +82,46 @@ func (b *Bus) PublishJob(ctx context.Context, msg transcode.JobMessage) error {
 	})
 }
 
-// ConsumeResults 阻塞消费转码结果。
+// ConsumeResults 阻塞消费转码结果；断线自动重连, 只有 ctx 取消才退出。
+// (与 my_transcode M3-0 同款根治: 之前 FetchMessage 一出错就 return, 消费者永久退出,
+//
+//	典型触发: kafka 重启后转码结果再也收不到, 资产状态卡在「转码中」)
 func (b *Bus) ConsumeResults(ctx context.Context, handler func(context.Context, transcode.ResultMessage) error) error {
 	if !b.enabled {
 		g.Log().Warning(ctx, "kafka disabled, skip result consumer")
 		<-ctx.Done()
 		return ctx.Err()
 	}
+
+	const (
+		minBackoff = 2 * time.Second
+		maxBackoff = 30 * time.Second
+	)
+	backoff := minBackoff
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		err := b.consumeResultsOnce(ctx, handler)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		g.Log().Warningf(ctx, "kafka: result consumer exited: %v; reconnect in %s", err, backoff)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		if backoff < maxBackoff {
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
+	}
+}
+
+func (b *Bus) consumeResultsOnce(ctx context.Context, handler func(context.Context, transcode.ResultMessage) error) error {
 	r := kafkago.NewReader(kafkago.ReaderConfig{
 		Brokers:        b.brokers,
 		GroupID:        b.group,

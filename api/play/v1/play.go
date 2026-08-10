@@ -72,3 +72,37 @@ type GwStatsIngestReq struct {
 type GwStatsIngestRes struct {
 	Accepted int `json:"accepted"`
 }
+
+// ---- M3-2 链接失效闸 ----
+
+type RevokeItem struct {
+	SiteCode  string `json:"site_code"`
+	AssetCode string `json:"asset_code"`
+	NotBefore int64  `json:"not_before"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// 管理端(X-Admin-Token)
+type RevokeListReq struct {
+	g.Meta `path:"/admin/play/revokes" method:"get" tags:"Admin/Play" summary:"链接失效闸列表"`
+}
+type RevokeListRes struct {
+	List []RevokeItem `json:"list"`
+}
+
+type RevokeReq struct {
+	g.Meta    `path:"/admin/play/revoke" method:"post" tags:"Admin/Play" summary:"一键失效(站点或指定资产的现有链接)"`
+	SiteCode  string `json:"site_code" v:"required#站点必填"`
+	AssetCode string `json:"asset_code"` // 空=整站
+}
+type RevokeRes struct {
+	NotBefore int64 `json:"not_before"`
+}
+
+// 网关内部(X-Play-Token)
+type GwRevokesReq struct {
+	g.Meta `path:"/gw/play/revokes" method:"get" tags:"Gw/Play" summary:"网关拉取失效闸"`
+}
+type GwRevokesRes struct {
+	List []RevokeItem `json:"list"`
+}

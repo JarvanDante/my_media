@@ -38,15 +38,32 @@ func load() {
 	}
 }
 
-func sign(code, site string, exp int64, d int, ip string) string {
+func sign(code, site string, exp int64, d int, ip string, iat int64) string {
 	mac := hmac.New(sha256.New, []byte(c.secret))
-	_, _ = fmt.Fprintf(mac, "%s|%s|%d|%d|%s", code, site, exp, d, ip)
+	_, _ = fmt.Fprintf(mac, "%s|%s|%d|%d|%s|%d", code, site, exp, d, ip, iat)
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func buildURL(code, site string, exp int64, d int, ip string) string {
-	u := fmt.Sprintf("%s/hls/%s/index.m3u8?e=%d&s=%s&sig=%s",
-		c.base, url.PathEscape(code), exp, url.QueryEscape(site), sign(code, site, exp, d, ip))
+// playlistName 从已存播放地址推断清单文件名(master.m3u8 多码率 / index.m3u8 旧单档),
+// 空或异常时默认 master.m3u8。保证新老资产都指向各自真实清单。
+func playlistName(raw string) string {
+	if raw != "" {
+		if i := strings.LastIndex(raw, "/"); i >= 0 {
+			name := raw[i+1:]
+			if j := strings.IndexAny(name, "?#"); j >= 0 {
+				name = name[:j]
+			}
+			if strings.HasSuffix(name, ".m3u8") {
+				return name
+			}
+		}
+	}
+	return "master.m3u8"
+}
+
+func buildURL(code, site, file string, exp int64, d int, ip string, iat int64) string {
+	u := fmt.Sprintf("%s/hls/%s/%s?e=%d&s=%s&t=%d&sig=%s",
+		c.base, url.PathEscape(code), file, exp, url.QueryEscape(site), iat, sign(code, site, exp, d, ip, iat))
 	if d > 0 {
 		u += fmt.Sprintf("&d=%d", d)
 	}
@@ -62,7 +79,8 @@ func Wrap(code, raw, site string) string {
 	if c.base == "" || c.secret == "" || raw == "" || code == "" {
 		return raw
 	}
-	return buildURL(code, site, time.Now().Unix()+c.ttl, 0, "")
+	now := time.Now().Unix()
+	return buildURL(code, site, playlistName(raw), now+c.ttl, 0, "", now)
 }
 
 // Enabled 网关是否已配置。
@@ -72,7 +90,7 @@ func Enabled() bool {
 }
 
 // SignURL 定制签发(play-token 接口用): ttlSec<=0 用全局默认; previewSec>0 试看; ip 非空则绑定。
-func SignURL(code, site string, ttlSec int64, previewSec int, ip string) (playURL string, expiresAt int64) {
+func SignURL(code, site string, ttlSec int64, previewSec int, ip, raw string) (playURL string, expiresAt int64) {
 	once.Do(load)
 	if !Enabled() || code == "" {
 		return "", 0
@@ -80,6 +98,7 @@ func SignURL(code, site string, ttlSec int64, previewSec int, ip string) (playUR
 	if ttlSec <= 0 {
 		ttlSec = c.ttl
 	}
-	exp := time.Now().Unix() + ttlSec
-	return buildURL(code, site, exp, previewSec, ip), exp
+	now := time.Now().Unix()
+	exp := now + ttlSec
+	return buildURL(code, site, playlistName(raw), exp, previewSec, ip, now), exp
 }

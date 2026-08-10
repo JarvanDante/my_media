@@ -9,11 +9,11 @@ import (
 // RegisterAdmin 管理端(X-Admin-Token 分组)。
 func RegisterAdmin(group *ghttp.RouterGroup, repo *dao.PlayRepo) {
 	ctrl := New(repo)
-	group.Bind(ctrl.PolicyList, ctrl.PolicyUpsert, ctrl.Stats)
+	group.Bind(ctrl.PolicyList, ctrl.PolicyUpsert, ctrl.Stats, ctrl.RevokeList, ctrl.Revoke)
 }
 
 // RegisterGw 网关内部(X-Play-Token 分组)。
 func RegisterGw(group *ghttp.RouterGroup, repo *dao.PlayRepo) {
 	ctrl := New(repo)
-	group.Bind(ctrl.GwPolicies, ctrl.GwStatsIngest)
+	group.Bind(ctrl.GwPolicies, ctrl.GwStatsIngest, ctrl.GwRevokes)
 }

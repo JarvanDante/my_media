@@ -60,3 +60,22 @@ func (r *PlayRepo) StatsQuery(ctx context.Context, start, end, siteCode string, 
 	err := m.Order("day desc, plays desc").Limit(limit).Scan(&list)
 	return list, err
 }
+
+// RevokeSet 设置(站点或资产)失效基线时间。asset 为空视为整站 '*'。
+func (r *PlayRepo) RevokeSet(ctx context.Context, site, asset string, notBefore int64) error {
+	if asset == "" {
+		asset = "*"
+	}
+	_, err := g.Model("play_revoke").Ctx(ctx).Data(g.Map{
+		"site_code": site, "asset_code": asset,
+		"not_before": notBefore, "updated_at": gtime.Now(),
+	}).OnConflict("site_code", "asset_code").Save()
+	return err
+}
+
+// RevokeList 全部失效闸(网关同步 + 管理端展示)。
+func (r *PlayRepo) RevokeList(ctx context.Context) ([]*entity.PlayRevoke, error) {
+	var list []*entity.PlayRevoke
+	err := g.Model("play_revoke").Ctx(ctx).Order("site_code asc, asset_code asc").Scan(&list)
+	return list, err
+}
