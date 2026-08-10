@@ -39,3 +39,9 @@ transcode:
   profile: "h264_hls"
   biz: "media"
   cover_seek_sec: 8
+
+# 播放网关(my_play): 配置后对外播放地址改为网关签名地址; 留空则回退 MinIO 直链
+play_gateway:
+  base_url: "http://127.0.0.1:8006"
+  secret: "dev-play-secret-change-me"   # 必须与 my_play 的 play.secret 一致
+  token_ttl_sec: 14400

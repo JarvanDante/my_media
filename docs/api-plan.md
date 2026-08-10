@@ -31,4 +31,4 @@
 | POST | `/open/assets/{id}/pick` | 选用（记 `site_asset_pick`） | ✅ M2 |
 | GET | `/open/picks` | 本站已选用列表 | ✅ M2 |
 
-选用后：子站在本站库建立上架关系，播放走池内 `play_url`（或播放服务二次封装）。
+选用后：子站在本站库建立上架关系，播放走池内 `play_url`（或统一播放二次封装）。

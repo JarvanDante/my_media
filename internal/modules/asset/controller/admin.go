@@ -9,6 +9,7 @@ import (
 	"github.com/JarvanDante/my_media/internal/modules/asset/domain"
 	"github.com/JarvanDante/my_media/internal/modules/asset/service"
 	"github.com/JarvanDante/my_media/internal/shared/errcode"
+	"github.com/JarvanDante/my_media/internal/shared/playsign"
 )
 
 type Admin struct {
@@ -81,7 +82,7 @@ func (c *Admin) Delete(ctx context.Context, req *v1.DeleteReq) (res *v1.DeleteRe
 func toAdminItem(a domain.Asset) v1.AssetItem {
 	return v1.AssetItem{
 		Id: a.Code, Title: a.Title, CoverUrl: a.CoverUrl, Status: a.Status,
-		TranscodeStatus: a.TranscodeStatus, PlayUrl: a.PlayUrl,
+		TranscodeStatus: a.TranscodeStatus, PlayUrl: playsign.Wrap(a.Code, a.PlayUrl, "admin"),
 		DurationSec: a.DurationSec, CreatedAt: a.CreatedAt,
 	}
 }

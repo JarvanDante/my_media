@@ -46,7 +46,7 @@ curl -s -X POST http://127.0.0.1:8004/open/assets/3/pick \
   -H 'X-App-Key: ak_demo' -H 'X-App-Secret: sk_demo'
 ```
 
-选用后：子站在本站库建上架关系；播放可先用返回的 `play_url`（防盗链属后续播放服务）。
+选用后：子站在本站库建上架关系；播放可先用返回的 `play_url`（防盗链属后续统一播放）。
 
 ## 迁移
 
