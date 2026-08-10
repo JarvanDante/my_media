@@ -57,3 +57,15 @@ func NotFound(r *ghttp.Request) {
 	r.Response.WriteStatus(http.StatusNotFound)
 	r.Response.WriteJson(g.Map{"code": 404, "message": "not found", "data": nil})
 }
+
+// PlayToken 网关内部接口鉴权: X-Play-Token 必须等于 play_gateway.secret。
+func PlayToken(r *ghttp.Request) {
+	want := g.Cfg().MustGet(r.Context(), "play_gateway.secret").String()
+	got := r.Header.Get("X-Play-Token")
+	if want == "" || got != want {
+		r.Response.WriteStatus(http.StatusUnauthorized)
+		r.Response.WriteJsonExit(g.Map{"code": 401, "message": "invalid play token", "data": nil})
+		return
+	}
+	r.Middleware.Next()
+}

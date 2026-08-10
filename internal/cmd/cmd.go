@@ -13,6 +13,7 @@ import (
 	"github.com/JarvanDante/my_media/internal/modules/asset/logic"
 	"github.com/JarvanDante/my_media/internal/modules/client"
 	"github.com/JarvanDante/my_media/internal/modules/health"
+	playmod "github.com/JarvanDante/my_media/internal/modules/play"
 	"github.com/JarvanDante/my_media/internal/shared/middleware"
 	"github.com/JarvanDante/my_media/internal/shared/mq"
 	"github.com/JarvanDante/my_media/internal/shared/storage"
@@ -46,10 +47,17 @@ var Main = gcmd.Command{
 		health.Register(s.Group("/"))
 
 		clientRepo := dao.NewClientRepo()
+		playRepo := dao.NewPlayRepo()
 		s.Group("/", func(group *ghttp.RouterGroup) {
 			group.Middleware(middleware.AdminToken)
 			asset.RegisterAdmin(group, svc)
 			client.RegisterAdmin(group, clientRepo)
+			playmod.RegisterAdmin(group, playRepo)
+		})
+
+		s.Group("/", func(group *ghttp.RouterGroup) {
+			group.Middleware(middleware.PlayToken)
+			playmod.RegisterGw(group, playRepo)
 		})
 
 		s.Group("/", func(group *ghttp.RouterGroup) {

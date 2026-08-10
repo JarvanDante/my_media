@@ -110,3 +110,33 @@ func (c *Open) PickList(ctx context.Context, req *v1.PickListReq) (res *v1.PickL
 	}
 	return res, nil
 }
+
+// PlayToken 为已选用的就绪资产签发播放地址(策略 TTL / 试看 / IP 绑定)。
+func (c *Open) PlayToken(ctx context.Context, req *v1.PlayTokenReq) (res *v1.PlayTokenRes, err error) {
+	a, err := c.svc.Get(ctx, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	if a == nil || a.Status != 2 {
+		return nil, gerror.NewCode(errcode.CodeNotFound, "资产不可用")
+	}
+	r := g.RequestFromCtx(ctx)
+	appKey := r.GetCtxVar("app_key").String()
+	siteCode := r.GetCtxVar("site_code").String()
+	picked, err := c.svc.PickedSet(ctx, appKey, []string{a.Code})
+	if err != nil {
+		return nil, err
+	}
+	if !picked[a.Code] {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, "请先选用该媒资")
+	}
+	if !playsign.Enabled() {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, "播放网关未配置")
+	}
+	var ttl int64
+	if p, _ := dao.NewPlayRepo().PolicyGet(ctx, siteCode); p != nil && p.Status == 1 && p.TokenTtlSec > 0 {
+		ttl = int64(p.TokenTtlSec)
+	}
+	playURL, exp := playsign.SignURL(a.Code, siteCode, ttl, req.PreviewSec, req.ClientIp)
+	return &v1.PlayTokenRes{PlayUrl: playURL, ExpiresAt: exp}, nil
+}

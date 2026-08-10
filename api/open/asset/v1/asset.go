@@ -67,3 +67,16 @@ type PickListRes struct {
 	List  []PickListItem `json:"list"`
 	Total int            `json:"total"`
 }
+
+// PlayTokenReq 签发播放地址(需已选用): 可选试看秒数与绑定IP。
+type PlayTokenReq struct {
+	g.Meta     `path:"/open/assets/{id}/play-token" method:"post" tags:"Open/Asset" summary:"签发播放地址(可试看/绑IP)"`
+	Id         string `json:"id" in:"path" v:"required|length:8,16"`
+	PreviewSec int    `json:"preview_sec" v:"min:0"`
+	ClientIp   string `json:"client_ip"`
+}
+
+type PlayTokenRes struct {
+	PlayUrl   string `json:"play_url"`
+	ExpiresAt int64  `json:"expires_at"`
+}
