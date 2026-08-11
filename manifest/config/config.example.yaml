@@ -47,3 +47,9 @@ play_gateway:
   base_url: "http://127.0.0.1:8006"
   secret: "dev-play-secret-change-me"   # 必须与 my_play 的 play.secret 一致
   token_ttl_sec: 14400
+
+# Open 开放接口平台级防刷(按 app_key/站点聚合统计, 超限 429)
+# 注意: 这是"每站点上限", 拦不住站内单个用户; 站内按用户限流在站点后端做
+open_ratelimit:
+  per_min: 60      # 每分钟每站点 play-token 签发上限
+  per_hour: 600    # 每小时每站点 play-token 签发上限

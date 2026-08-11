@@ -3,6 +3,9 @@ package controller
 import (
 	"context"
 	"errors"
+	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/gogf/gf/v2/errors/gerror"
 	"github.com/gogf/gf/v2/frame/g"
@@ -13,6 +16,7 @@ import (
 	"github.com/JarvanDante/my_media/internal/modules/asset/service"
 	"github.com/JarvanDante/my_media/internal/shared/errcode"
 	"github.com/JarvanDante/my_media/internal/shared/playsign"
+	"github.com/JarvanDante/my_media/internal/shared/ratelimit"
 )
 
 type Open struct {
@@ -129,6 +133,20 @@ func (c *Open) PlayToken(ctx context.Context, req *v1.PlayTokenReq) (res *v1.Pla
 	}
 	if !picked[a.Code] {
 		return nil, gerror.NewCode(errcode.CodeBadRequest, "请先选用该媒资")
+	}
+	// 平台级防刷: 按 app_key(站点)统计签发频率, 超限直接 429 + 告警日志。
+	// 注意: app_key 是站点级凭证, 这里是"每站点聚合上限", 拦不住站内单个用户;
+	// 站内按终端用户限流应在站点后端(my_service)做。
+	rlKey := appKey
+	if rlKey == "" {
+		rlKey = r.GetClientIp()
+	}
+	if ok, retry, reason := ratelimit.Default(ctx).Allow("playtoken:"+rlKey, time.Now().Unix()); !ok {
+		g.Log().Warningf(ctx, "play-token 限流命中 app_key=%s site=%s ip=%s asset=%s: %s",
+			appKey, siteCode, r.GetClientIp(), a.Code, reason)
+		r.Response.Header().Set("Retry-After", strconv.Itoa(retry))
+		r.Response.WriteStatus(http.StatusTooManyRequests)
+		r.Response.WriteJsonExit(g.Map{"code": 429, "message": reason, "data": nil})
 	}
 	if !playsign.Enabled() {
 		return nil, gerror.NewCode(errcode.CodeBadRequest, "播放网关未配置")
