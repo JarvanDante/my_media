@@ -8,6 +8,7 @@ import (
 	"github.com/gogf/gf/v2/net/ghttp"
 	"github.com/gogf/gf/v2/os/gcmd"
 
+	"github.com/JarvanDante/my_media/internal/boot"
 	"github.com/JarvanDante/my_media/internal/dao"
 	"github.com/JarvanDante/my_media/internal/modules/asset"
 	"github.com/JarvanDante/my_media/internal/modules/asset/logic"
@@ -24,6 +25,7 @@ var Main = gcmd.Command{
 	Name:  "mediaapi",
 	Brief: "媒资中心(PaaS) API",
 	Func: func(ctx context.Context, parser *gcmd.Parser) error {
+		boot.InitNacosConfig(ctx) // 若配置了 NACOS_* 则切到 Nacos, 否则本地 config
 		store, err := storage.NewMinio(ctx)
 		if err != nil {
 			g.Log().Warningf(ctx, "minio init failed: %v (upload/transcode 将不可用)", err)
