@@ -83,6 +83,27 @@ func Wrap(code, raw, site string) string {
 	return buildURL(code, site, playlistName(raw), now+c.ttl, 0, "", now)
 }
 
+// WrapCover 把转码封面(MinIO 私有桶直链)改成 my_play 签名地址，浏览器经网关 302 预签名拉取。
+// 自定义外链封面原样返回；网关未配置时也不改写。
+func WrapCover(code, raw, site string) string {
+	once.Do(load)
+	if raw == "" || code == "" {
+		return raw
+	}
+	if c.base == "" || c.secret == "" {
+		return raw
+	}
+	if !isHlsCover(raw, code) {
+		return raw
+	}
+	now := time.Now().Unix()
+	return buildURL(code, site, "cover.jpg", now+c.ttl, 0, "", now)
+}
+
+func isHlsCover(raw, code string) bool {
+	return strings.Contains(raw, "/media/hls/"+code+"/") && strings.Contains(raw, "cover.jpg")
+}
+
 // Enabled 网关是否已配置。
 func Enabled() bool {
 	once.Do(load)

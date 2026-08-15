@@ -81,7 +81,7 @@ func (c *Admin) Delete(ctx context.Context, req *v1.DeleteReq) (res *v1.DeleteRe
 
 func toAdminItem(a domain.Asset) v1.AssetItem {
 	return v1.AssetItem{
-		Id: a.Code, Title: a.Title, CoverUrl: a.CoverUrl, Status: a.Status,
+		Id: a.Code, Title: a.Title, CoverUrl: playsign.WrapCover(a.Code, a.CoverUrl, "admin"), Status: a.Status,
 		TranscodeStatus: a.TranscodeStatus, PlayUrl: playsign.Wrap(a.Code, a.PlayUrl, "admin"),
 		DurationSec: a.DurationSec, CreatedAt: a.CreatedAt,
 	}

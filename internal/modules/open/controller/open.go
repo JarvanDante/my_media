@@ -46,7 +46,7 @@ func (c *Open) List(ctx context.Context, req *v1.ListReq) (res *v1.ListRes, err 
 	res = &v1.ListRes{Total: total, List: make([]v1.AssetItem, 0, len(list))}
 	for _, a := range list {
 		res.List = append(res.List, v1.AssetItem{
-			Id: a.Code, Title: a.Title, CoverUrl: a.CoverUrl,
+			Id: a.Code, Title: a.Title, CoverUrl: playsign.WrapCover(a.Code, a.CoverUrl, siteCode),
 			PlayUrl: playsign.Wrap(a.Code, a.PlayUrl, siteCode), DurationSec: a.DurationSec, Picked: picked[a.Code],
 		})
 	}
@@ -70,7 +70,7 @@ func (c *Open) Detail(ctx context.Context, req *v1.DetailReq) (res *v1.DetailRes
 	}
 	return &v1.DetailRes{
 		AssetItem: v1.AssetItem{
-			Id: a.Code, Title: a.Title, CoverUrl: a.CoverUrl,
+			Id: a.Code, Title: a.Title, CoverUrl: playsign.WrapCover(a.Code, a.CoverUrl, siteCode),
 			PlayUrl: playsign.Wrap(a.Code, a.PlayUrl, siteCode), DurationSec: a.DurationSec, Picked: picked[a.Code],
 		},
 		PlayKey: a.PlayKey,
@@ -92,7 +92,7 @@ func (c *Open) Pick(ctx context.Context, req *v1.PickReq) (res *v1.PickRes, err 
 		return nil, gerror.NewCode(errcode.CodeNotFound, "资产不存在")
 	}
 	return &v1.PickRes{
-		Id: a.Code, Title: a.Title, CoverUrl: a.CoverUrl,
+		Id: a.Code, Title: a.Title, CoverUrl: playsign.WrapCover(a.Code, a.CoverUrl, siteCode),
 		PlayUrl: playsign.Wrap(a.Code, a.PlayUrl, siteCode), PlayKey: a.PlayKey, DurationSec: a.DurationSec,
 	}, nil
 }
@@ -108,7 +108,7 @@ func (c *Open) PickList(ctx context.Context, req *v1.PickListReq) (res *v1.PickL
 	res = &v1.PickListRes{Total: total, List: make([]v1.PickListItem, 0, len(list))}
 	for _, x := range list {
 		res.List = append(res.List, v1.PickListItem{
-			Id: x.Code, Title: x.Title, CoverUrl: x.CoverUrl,
+			Id: x.Code, Title: x.Title, CoverUrl: playsign.WrapCover(x.Code, x.CoverUrl, siteCode),
 			PlayUrl: playsign.Wrap(x.Code, x.PlayUrl, siteCode), PlayKey: x.PlayKey, DurationSec: x.DurationSec, PickedAt: x.PickedAt,
 		})
 	}
