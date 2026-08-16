@@ -21,7 +21,7 @@ func AdminToken(r *ghttp.Request) {
 	want := g.Cfg().MustGet(r.Context(), "security.admin_token").String()
 	got := r.Header.Get("X-Admin-Token")
 	if want == "" || got == "" || got != want {
-		r.Response.WriteStatus(http.StatusUnauthorized)
+		r.Response.Status = http.StatusUnauthorized
 		r.Response.WriteJsonExit(g.Map{"code": 401, "message": "invalid admin token", "data": nil})
 		return
 	}
@@ -33,13 +33,13 @@ func AppKey(r *ghttp.Request) {
 	key := r.Header.Get("X-App-Key")
 	secret := r.Header.Get("X-App-Secret")
 	if key == "" || secret == "" {
-		r.Response.WriteStatus(http.StatusUnauthorized)
+		r.Response.Status = http.StatusUnauthorized
 		r.Response.WriteJsonExit(g.Map{"code": 401, "message": "missing app credentials", "data": nil})
 		return
 	}
 	cli, err := dao.NewClientRepo().FindActive(r.Context(), key)
 	if err != nil || cli == nil || !authz.MatchSecret(secret, cli.AppSecret, cli.SecretHashed == 1) {
-		r.Response.WriteStatus(http.StatusUnauthorized)
+		r.Response.Status = http.StatusUnauthorized
 		r.Response.WriteJsonExit(g.Map{"code": 401, "message": "invalid app credentials", "data": nil})
 		return
 	}
@@ -63,7 +63,7 @@ func PlayToken(r *ghttp.Request) {
 	want := g.Cfg().MustGet(r.Context(), "play_gateway.secret").String()
 	got := r.Header.Get("X-Play-Token")
 	if want == "" || got != want {
-		r.Response.WriteStatus(http.StatusUnauthorized)
+		r.Response.Status = http.StatusUnauthorized
 		r.Response.WriteJsonExit(g.Map{"code": 401, "message": "invalid play token", "data": nil})
 		return
 	}
