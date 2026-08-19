@@ -14,6 +14,7 @@ import (
 var (
 	reLeadingNum = regexp.MustCompile(`^(\d+)`)
 	reHua        = regexp.MustCompile(`第\s*(\d+)\s*话`)
+	rePageNum    = regexp.MustCompile(`(?i)page[_\-]?(\d+)`)
 	imageExt     = map[string]bool{
 		".jpg": true, ".jpeg": true, ".png": true, ".webp": true, ".gif": true,
 	}
@@ -189,24 +190,34 @@ func hasChapterDirs(prefix string, entries []zipEntry) bool {
 }
 
 func collectChapterDirs(prefix string, entries []zipEntry) []string {
-	// 优先 chapters/ 下的子目录
-	fromChapters := subdirsWithImages(joinPrefix(prefix, "chapters"), entries)
-	if len(fromChapters) > 0 {
-		out := make([]string, 0, len(fromChapters))
-		for _, d := range fromChapters {
-			out = append(out, joinPrefix(joinPrefix(prefix, "chapters"), d))
+	joinAll := func(names []string, parent string) []string {
+		out := make([]string, 0, len(names))
+		for _, d := range names {
+			out = append(out, joinPrefix(parent, d))
 		}
 		return out
 	}
-	// 否则漫画根下带页图的子目录(排除 chapters 自身)
-	var out []string
+
+	// 规范目录：漫画根下「漫画名第N话」
+	var hua, other []string
 	for _, d := range subdirsWithImages(prefix, entries) {
 		if strings.EqualFold(d, "chapters") {
 			continue
 		}
-		out = append(out, joinPrefix(prefix, d))
+		if reHua.MatchString(d) {
+			hua = append(hua, d)
+		} else {
+			other = append(other, d)
+		}
 	}
-	return out
+	if len(hua) > 0 {
+		return joinAll(hua, prefix)
+	}
+	fromChapters := subdirsWithImages(joinPrefix(prefix, "chapters"), entries)
+	if len(fromChapters) > 0 {
+		return joinAll(fromChapters, joinPrefix(prefix, "chapters"))
+	}
+	return joinAll(other, prefix)
 }
 
 func subdirsWithImages(prefix string, entries []zipEntry) []string {
@@ -311,7 +322,7 @@ func parseOneManga(prefix string, entries []zipEntry) (parsedManga, error) {
 }
 
 func pagesInDir(dir string, entries []zipEntry) []parsedPage {
-	var pages []parsedPage
+	var pages, aux []parsedPage
 	for _, e := range entries {
 		rel := trimPrefix(e.Path, dir)
 		if rel == "" || strings.Contains(rel, "/") {
@@ -321,10 +332,18 @@ func pagesInDir(dir string, entries []zipEntry) []parsedPage {
 		if !imageExt[ext] {
 			continue
 		}
-		pages = append(pages, parsedPage{Name: rel, File: e.File})
+		item := parsedPage{Name: rel, File: e.File}
+		if isAuxChapterImage(rel) {
+			aux = append(aux, item)
+			continue
+		}
+		pages = append(pages, item)
+	}
+	if len(pages) == 0 {
+		pages = aux
 	}
 	sort.Slice(pages, func(i, j int) bool {
-		si, sj := chapterSeq(pages[i].Name), chapterSeq(pages[j].Name)
+		si, sj := pageSeq(pages[i].Name), pageSeq(pages[j].Name)
 		if si != sj {
 			return si < sj
 		}
@@ -345,27 +364,24 @@ func fileInDir(dir, name string, entries []zipEntry) *zip.File {
 }
 
 func applyInfoJSON(f *zip.File, m *parsedManga) {
-	title := jsonStringField(f, "title", "name", "comic_name")
-	if title != "" {
-		m.Title = title
-	}
-	if s := jsonStringField(f, "intro", "description", "desc", "summary"); s != "" {
-		m.Intro = s
-	}
-	if s := jsonStringField(f, "author"); s != "" {
-		m.Author = s
-	}
-	if s := jsonStringField(f, "category", "cate", "tag"); s != "" {
-		m.Category = s
-	}
-}
-
-func jsonStringField(f *zip.File, keys ...string) string {
 	raw := readJSONMap(f)
 	if raw == nil {
-		return ""
+		return
 	}
-	return jsonMapString(raw, keys...)
+	if title := jsonMapString(raw, "title", "name", "comic_name"); title != "" {
+		m.Title = title
+	}
+	if s := jsonMapString(raw, "intro", "description", "desc", "summary"); s != "" {
+		m.Intro = s
+	}
+	if s := jsonMapString(raw, "author", "writer"); s != "" {
+		m.Author = s
+	}
+	if s := jsonMapString(raw, "category", "cate", "tag"); s != "" {
+		m.Category = s
+	} else if s := jsonMapStringSlice(raw, "types", "tags", "categories"); s != "" {
+		m.Category = s
+	}
 }
 
 func readChapterInfo(f *zip.File) (title string, num int) {
@@ -399,10 +415,42 @@ func readJSONMap(f *zip.File) map[string]any {
 }
 
 func jsonMapString(raw map[string]any, keys ...string) string {
+	if raw == nil {
+		return ""
+	}
 	for _, k := range keys {
 		if v, ok := raw[k]; ok {
 			if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
 				return strings.TrimSpace(s)
+			}
+		}
+	}
+	return ""
+}
+
+func jsonMapStringSlice(raw map[string]any, keys ...string) string {
+	if raw == nil {
+		return ""
+	}
+	for _, k := range keys {
+		v, ok := raw[k]
+		if !ok || v == nil {
+			continue
+		}
+		switch t := v.(type) {
+		case string:
+			if s := strings.TrimSpace(t); s != "" {
+				return s
+			}
+		case []any:
+			parts := make([]string, 0, len(t))
+			for _, item := range t {
+				if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+					parts = append(parts, strings.TrimSpace(s))
+				}
+			}
+			if len(parts) > 0 {
+				return strings.Join(parts, ",")
 			}
 		}
 	}
@@ -468,6 +516,23 @@ func isCoverName(filename string) bool {
 	}
 	stem := strings.ToLower(strings.TrimSuffix(filename, ext))
 	return coverNames[stem]
+}
+
+func isAuxChapterImage(filename string) bool {
+	if isCoverName(filename) {
+		return true
+	}
+	stem := strings.ToLower(strings.TrimSuffix(filename, path.Ext(filename)))
+	return stem == "small-cover" || stem == "small_cover"
+}
+
+func pageSeq(name string) int {
+	base := strings.TrimSuffix(name, path.Ext(name))
+	if m := rePageNum.FindStringSubmatch(base); len(m) == 2 {
+		n, _ := strconv.Atoi(m[1])
+		return n
+	}
+	return chapterSeq(name)
 }
 
 func chapterSeq(name string) int {

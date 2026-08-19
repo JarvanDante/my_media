@@ -135,7 +135,7 @@ func TestParseComicsZip_ToomicsChapterInfoKeepsHua(t *testing.T) {
 		}
 	}
 	add("游戏规则我来定/cover.jpg", "cover")
-	add("游戏规则我来定/info.json", `{"title":"游戏规则我来定","description":"简介"}`)
+	add("游戏规则我来定/info.json", `{"title":"游戏规则我来定","description":"简介","writer":"YANGCHONG","types":["剧情","浪漫爱情"]}`)
 	add("游戏规则我来定/游戏规则我来定第1话/chapter_info.json", `{"num":"1","title":"游戏规则我来定"}`)
 	add("游戏规则我来定/游戏规则我来定第1话/page_001.jpg", "p1")
 	add("游戏规则我来定/游戏规则我来定第2话/chapter_info.json", `{"num":"2","title":"游戏规则我来定"}`)
@@ -159,6 +159,9 @@ func TestParseComicsZip_ToomicsChapterInfoKeepsHua(t *testing.T) {
 	}
 	if len(list) != 1 {
 		t.Fatalf("manga count=%d", len(list))
+	}
+	if list[0].Author != "YANGCHONG" || list[0].Category != "剧情,浪漫爱情" {
+		t.Fatalf("meta author=%s category=%s", list[0].Author, list[0].Category)
 	}
 	chs := list[0].Chapters
 	if len(chs) != 3 {
