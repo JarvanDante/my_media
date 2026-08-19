@@ -275,6 +275,14 @@ func parseOneManga(prefix string, entries []zipEntry) (parsedManga, error) {
 			Title: displayName(path.Base(dir)),
 			Seq:   chapterSeq(path.Base(dir)),
 		}
+		infoTitle := ""
+		if f := fileInDir(dir, "chapter_info.json", entries); f != nil {
+			t, n := readChapterInfo(f)
+			infoTitle = t
+			if ch.Seq <= 0 && n > 0 {
+				ch.Seq = n
+			}
+		}
 		if ch.Seq <= 0 {
 			ch.Seq = i + 1
 		}
@@ -292,11 +300,7 @@ func parseOneManga(prefix string, entries []zipEntry) (parsedManga, error) {
 		if len(ch.Pages) > 500 {
 			return m, errZip("「" + m.Title + "」单章页数超过 500")
 		}
-		if f := fileInDir(dir, "chapter_info.json", entries); f != nil {
-			if t := jsonStringField(f, "title", "name"); t != "" {
-				ch.Title = t
-			}
-		}
+		ch.Title = finalizeChapterTitle(ch.Title, m.Title, infoTitle, ch.Seq)
 		m.Chapters = append(m.Chapters, ch)
 	}
 	if len(m.Chapters) == 0 {
@@ -357,19 +361,44 @@ func applyInfoJSON(f *zip.File, m *parsedManga) {
 }
 
 func jsonStringField(f *zip.File, keys ...string) string {
+	raw := readJSONMap(f)
+	if raw == nil {
+		return ""
+	}
+	return jsonMapString(raw, keys...)
+}
+
+func readChapterInfo(f *zip.File) (title string, num int) {
+	raw := readJSONMap(f)
+	if raw == nil {
+		return "", 0
+	}
+	title = jsonMapString(raw, "title", "name")
+	num = jsonMapInt(raw, "num", "index", "seq", "ep")
+	return title, num
+}
+
+func readJSONMap(f *zip.File) map[string]any {
+	if f == nil {
+		return nil
+	}
 	rc, err := f.Open()
 	if err != nil {
-		return ""
+		return nil
 	}
 	defer rc.Close()
 	b, err := io.ReadAll(io.LimitReader(rc, 1<<20))
 	if err != nil {
-		return ""
+		return nil
 	}
 	var raw map[string]any
 	if json.Unmarshal(b, &raw) != nil {
-		return ""
+		return nil
 	}
+	return raw
+}
+
+func jsonMapString(raw map[string]any, keys ...string) string {
 	for _, k := range keys {
 		if v, ok := raw[k]; ok {
 			if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
@@ -378,6 +407,58 @@ func jsonStringField(f *zip.File, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func jsonMapInt(raw map[string]any, keys ...string) int {
+	for _, k := range keys {
+		v, ok := raw[k]
+		if !ok || v == nil {
+			continue
+		}
+		switch n := v.(type) {
+		case float64:
+			if n > 0 {
+				return int(n)
+			}
+		case string:
+			if i, err := strconv.Atoi(strings.TrimSpace(n)); err == nil && i > 0 {
+				return i
+			}
+		}
+	}
+	return 0
+}
+
+// Toomics 等源站的 chapter_info.title 经常是整部漫画名，不是「第N话」。
+// 文件夹名带第N话时以文件夹为准；否则才用 info 里真正的话名。
+func finalizeChapterTitle(folderTitle, mangaTitle, infoTitle string, seq int) string {
+	folderTitle = strings.TrimSpace(folderTitle)
+	mangaTitle = strings.TrimSpace(mangaTitle)
+	infoTitle = strings.TrimSpace(infoTitle)
+	if reHua.MatchString(folderTitle) {
+		return folderTitle
+	}
+	if infoTitle != "" && (reHua.MatchString(infoTitle) || !sameChapterName(infoTitle, mangaTitle)) {
+		return infoTitle
+	}
+	if seq > 0 && (folderTitle == "" || sameChapterName(folderTitle, mangaTitle)) {
+		base := mangaTitle
+		if base == "" {
+			base = folderTitle
+		}
+		if base == "" {
+			return "第" + strconv.Itoa(seq) + "话"
+		}
+		return base + " 第" + strconv.Itoa(seq) + "话"
+	}
+	if folderTitle != "" {
+		return folderTitle
+	}
+	return infoTitle
+}
+
+func sameChapterName(a, b string) bool {
+	return strings.TrimSpace(a) != "" && strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
 }
 
 func isCoverName(filename string) bool {

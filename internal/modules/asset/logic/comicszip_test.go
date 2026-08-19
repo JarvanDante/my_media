@@ -115,3 +115,74 @@ func TestParseComicsZip_DirectChapterFolders(t *testing.T) {
 		t.Fatalf("chapters=%d", len(list[0].Chapters))
 	}
 }
+
+func TestParseComicsZip_ToomicsChapterInfoKeepsHua(t *testing.T) {
+	dir := t.TempDir()
+	zipPath := filepath.Join(dir, "pack.zip")
+	f, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	add := func(name, body string) {
+		t.Helper()
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("游戏规则我来定/cover.jpg", "cover")
+	add("游戏规则我来定/info.json", `{"title":"游戏规则我来定","description":"简介"}`)
+	add("游戏规则我来定/游戏规则我来定第1话/chapter_info.json", `{"num":"1","title":"游戏规则我来定"}`)
+	add("游戏规则我来定/游戏规则我来定第1话/page_001.jpg", "p1")
+	add("游戏规则我来定/游戏规则我来定第2话/chapter_info.json", `{"num":"2","title":"游戏规则我来定"}`)
+	add("游戏规则我来定/游戏规则我来定第2话/page_001.jpg", "p2")
+	add("游戏规则我来定/游戏规则我来定第3话/small-cover.jpg", "p3")
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	zr, err := zip.OpenReader(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	list, err := parseComicsZip(&zr.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("manga count=%d", len(list))
+	}
+	chs := list[0].Chapters
+	if len(chs) != 3 {
+		t.Fatalf("chapters=%d", len(chs))
+	}
+	want := []string{"游戏规则我来定第1话", "游戏规则我来定第2话", "游戏规则我来定第3话"}
+	for i, title := range want {
+		if chs[i].Seq != i+1 || chs[i].Title != title {
+			t.Fatalf("ch%d seq=%d title=%q", i+1, chs[i].Seq, chs[i].Title)
+		}
+	}
+}
+
+func TestFinalizeChapterTitle(t *testing.T) {
+	got := finalizeChapterTitle("游戏规则我来定第1话", "游戏规则我来定", "游戏规则我来定", 1)
+	if got != "游戏规则我来定第1话" {
+		t.Fatalf("got %q", got)
+	}
+	got = finalizeChapterTitle("游戏规则我来定", "游戏规则我来定", "游戏规则我来定", 2)
+	if got != "游戏规则我来定 第2话" {
+		t.Fatalf("got %q", got)
+	}
+	got = finalizeChapterTitle("第一话", "测试漫画", "开端", 1)
+	if got != "开端" {
+		t.Fatalf("got %q", got)
+	}
+}
