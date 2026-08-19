@@ -176,9 +176,9 @@ func (c *Open) PlayToken(ctx context.Context, req *v1.PlayTokenReq) (res *v1.Pla
 }
 
 func toOpenItem(a domain.Asset, picked bool, siteCode string) v1.AssetItem {
-	cover, play := a.CoverUrl, a.PlayUrl
+	cover := playsign.WrapCover(a.Code, a.CoverUrl, siteCode)
+	play := a.PlayUrl
 	if a.Kind != consts.KindComics {
-		cover = playsign.WrapCover(a.Code, a.CoverUrl, siteCode)
 		play = playsign.Wrap(a.Code, a.PlayUrl, siteCode)
 	}
 	return v1.AssetItem{

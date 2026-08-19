@@ -16,6 +16,7 @@ import (
 // Minio 对象存储(上传预签名 / 探测 / 公开 URL)。
 type Minio struct {
 	client     *miniogo.Client
+	presignCli *miniogo.Client
 	endpoint   string
 	bucket     string
 	useSSL     bool
@@ -44,11 +45,22 @@ func NewMinio(ctx context.Context) (*Minio, error) {
 	}
 	m := &Minio{
 		client:     cli,
+		presignCli: cli,
 		endpoint:   endpoint,
 		bucket:     bucket,
 		useSSL:     useSSL,
 		publicBase: publicBase,
 		expire:     time.Duration(expireSec) * time.Second,
+	}
+	if publicBase != "" {
+		if b, perr := url.Parse(publicBase); perr == nil && b.Host != "" && b.Host != endpoint {
+			if pc, perr := miniogo.New(b.Host, &miniogo.Options{
+				Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
+				Secure: b.Scheme == "https",
+			}); perr == nil {
+				m.presignCli = pc
+			}
+		}
 	}
 	if err := m.EnsureBucket(ctx, bucket); err != nil {
 		g.Log().Warningf(ctx, "minio ensure bucket: %v", err)
@@ -80,7 +92,7 @@ func (m *Minio) PresignPut(ctx context.Context, bucket, key string) (string, err
 	if err := m.EnsureBucket(ctx, bucket); err != nil {
 		return "", err
 	}
-	u, err := m.client.PresignedPutObject(ctx, bucket, key, m.expire)
+	u, err := m.presignCli.PresignedPutObject(ctx, bucket, key, m.expire)
 	if err != nil {
 		return "", err
 	}
@@ -116,7 +128,7 @@ func (m *Minio) PresignGet(ctx context.Context, bucket, key string) (string, err
 	if key == "" {
 		return "", fmt.Errorf("empty object key")
 	}
-	u, err := m.client.PresignedGetObject(ctx, bucket, key, m.expire, nil)
+	u, err := m.presignCli.PresignedGetObject(ctx, bucket, key, m.expire, nil)
 	if err != nil {
 		return "", err
 	}

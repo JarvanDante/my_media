@@ -87,13 +87,13 @@ func Wrap(code, raw, site string) string {
 // 自定义外链封面原样返回；网关未配置时也不改写。
 func WrapCover(code, raw, site string) string {
 	once.Do(load)
-	if raw == "" || code == "" {
+	if code == "" {
 		return raw
 	}
 	if c.base == "" || c.secret == "" {
 		return raw
 	}
-	if !isHlsCover(raw, code) {
+	if raw != "" && !isPrivateMediaCover(raw, code) {
 		return raw
 	}
 	now := time.Now().Unix()
@@ -102,6 +102,16 @@ func WrapCover(code, raw, site string) string {
 
 func isHlsCover(raw, code string) bool {
 	return strings.Contains(raw, "/media/hls/"+code+"/") && strings.Contains(raw, "cover.jpg")
+}
+
+func isPrivateMediaCover(raw, code string) bool {
+	if isHlsCover(raw, code) {
+		return true
+	}
+	if strings.Contains(raw, "host.docker.internal") || strings.Contains(raw, ":19000/") {
+		return true
+	}
+	return strings.Contains(raw, "/comics/"+code+"/") || strings.Contains(raw, "/my-media/comics/")
 }
 
 // Enabled 网关是否已配置。

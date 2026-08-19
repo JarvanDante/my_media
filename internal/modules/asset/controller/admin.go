@@ -120,10 +120,9 @@ func (c *Admin) ImportComics(ctx context.Context, _ *v1.ImportComicsReq) (res *v
 }
 
 func toAdminItem(a domain.Asset) v1.AssetItem {
-	cover := a.CoverUrl
+	cover := playsign.WrapCover(a.Code, a.CoverUrl, "admin")
 	play := a.PlayUrl
 	if a.Kind != consts.KindComics {
-		cover = playsign.WrapCover(a.Code, a.CoverUrl, "admin")
 		play = playsign.Wrap(a.Code, a.PlayUrl, "admin")
 	}
 	return v1.AssetItem{
