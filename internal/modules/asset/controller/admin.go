@@ -93,7 +93,7 @@ func (c *Admin) Delete(ctx context.Context, req *v1.DeleteReq) (res *v1.DeleteRe
 	return &v1.DeleteRes{DeletedObjects: n}, nil
 }
 
-const maxComicsZip = 256 << 20
+const maxComicsZip = 2 << 30
 
 func (c *Admin) ImportComics(ctx context.Context, _ *v1.ImportComicsReq) (res *v1.ImportComicsRes, err error) {
 	r := ghttp.RequestFromCtx(ctx)
@@ -102,7 +102,7 @@ func (c *Admin) ImportComics(ctx context.Context, _ *v1.ImportComicsReq) (res *v
 		return nil, gerror.NewCode(errcode.CodeBadRequest, "请上传 zip 文件")
 	}
 	if up.Size > maxComicsZip {
-		return nil, gerror.NewCode(errcode.CodeBadRequest, "压缩包不能超过 256MB")
+		return nil, gerror.NewCode(errcode.CodeBadRequest, "压缩包不能超过 2GB")
 	}
 	if strings.ToLower(filepath.Ext(up.Filename)) != ".zip" {
 		return nil, gerror.NewCode(errcode.CodeBadRequest, "只支持 .zip")

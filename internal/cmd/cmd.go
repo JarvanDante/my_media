@@ -3,6 +3,7 @@ package cmd
 
 import (
 	"context"
+	"time"
 
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/net/ghttp"
@@ -43,7 +44,11 @@ var Main = gcmd.Command{
 		}()
 
 		s := g.Server()
-		s.Use(middleware.CORS, ghttp.MiddlewareHandlerResponse)
+		// 漫画 zip 常超过 GF 默认 8MB / 配置里的 256MB；Nacos 热更新改不了已启动的 server 限制。
+		s.SetClientMaxBodySize(2 << 30)
+		s.SetReadTimeout(30 * time.Minute)
+		s.SetWriteTimeout(30 * time.Minute)
+		s.Use(middleware.CORS, middleware.JSONErrors, ghttp.MiddlewareHandlerResponse)
 		s.BindStatusHandler(404, middleware.NotFound)
 
 		health.Register(s.Group("/"))

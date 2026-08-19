@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/net/ghttp"
@@ -14,6 +15,26 @@ import (
 func CORS(r *ghttp.Request) {
 	r.Response.CORSDefault()
 	r.Middleware.Next()
+}
+
+// JSONErrors 把 multipart 体过大等框架原始错误转成 JSON，避免前端 JSON.parse 失败。
+func JSONErrors(r *ghttp.Request) {
+	r.Middleware.Next()
+	body := strings.TrimSpace(r.Response.BufferString())
+	dump := body
+	if err := r.GetError(); err != nil {
+		dump += " " + err.Error()
+	}
+	if !strings.Contains(dump, "ParseMultipartForm") && !strings.Contains(dump, "request body too large") {
+		return
+	}
+	r.Response.ClearBuffer()
+	r.Response.Status = http.StatusRequestEntityTooLarge
+	r.Response.WriteJson(g.Map{
+		"code":    413,
+		"message": "压缩包太大，单包不能超过 2GB",
+		"data":    nil,
+	})
 }
 
 // AdminToken 总后台调用鉴权
