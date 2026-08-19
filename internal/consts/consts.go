@@ -7,3 +7,10 @@ const (
 	AssetStatusFailed     = 3
 	AssetStatusOff        = 4
 )
+
+// MinIO 对象前缀(桶 my-media)。视频走 media/，漫画与它同级走 comics/。
+const (
+	PrefixMedia  = "media/"
+	PrefixComics = "comics/"
+)
+
