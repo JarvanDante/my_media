@@ -14,6 +14,7 @@ import (
 var (
 	reLeadingNum = regexp.MustCompile(`^(\d+)`)
 	reHua        = regexp.MustCompile(`第\s*(\d+)\s*话`)
+	reAnyHua     = regexp.MustCompile(`^第.+话$`)
 	rePageNum    = regexp.MustCompile(`(?i)page[_\-]?(\d+)`)
 	imageExt     = map[string]bool{
 		".jpg": true, ".jpeg": true, ".png": true, ".webp": true, ".gif": true,
@@ -283,7 +284,7 @@ func parseOneManga(prefix string, entries []zipEntry) (parsedManga, error) {
 	for i, dir := range dirs {
 		ch := parsedChapter{
 			Dir:   dir,
-			Title: displayName(path.Base(dir)),
+			Title: chapterDisplayName(path.Base(dir)),
 			Seq:   chapterSeq(path.Base(dir)),
 		}
 		infoTitle := ""
@@ -561,6 +562,29 @@ func displayName(p string) string {
 		}
 	}
 	return base
+}
+
+// 001_与众不同的兄妹 → 与众不同的兄妹 第1话；已带第N话的文件夹名保持不变。
+func chapterDisplayName(p string) string {
+	base := path.Base(strings.Trim(p, "/"))
+	if base == "" {
+		return "未命名章节"
+	}
+	seq := 0
+	title := base
+	if m := reLeadingNum.FindStringSubmatch(base); len(m) == 2 {
+		seq, _ = strconv.Atoi(m[1])
+		if rest := strings.TrimLeft(base[len(m[1]):], " _-."); rest != "" {
+			title = rest
+		}
+	}
+	if reHua.MatchString(title) || reAnyHua.MatchString(title) {
+		return title
+	}
+	if seq > 0 {
+		return title + " 第" + strconv.Itoa(seq) + "话"
+	}
+	return title
 }
 
 func trimPrefix(p, prefix string) string {

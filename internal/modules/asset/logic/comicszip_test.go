@@ -175,6 +175,70 @@ func TestParseComicsZip_ToomicsChapterInfoKeepsHua(t *testing.T) {
 	}
 }
 
+func TestChapterDisplayName(t *testing.T) {
+	cases := map[string]string{
+		"001_与众不同的兄妹":    "与众不同的兄妹 第1话",
+		"010_与众不同的兄妹":    "与众不同的兄妹 第10话",
+		"030_与众不同的兄妹":    "与众不同的兄妹 第30话",
+		"游戏规则我来定第1话":     "游戏规则我来定第1话",
+		"001_游戏规则我来定第1话": "游戏规则我来定第1话",
+		"第一话":            "第一话",
+	}
+	for in, want := range cases {
+		if got := chapterDisplayName(in); got != want {
+			t.Fatalf("%s => %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestParseComicsZip_LeadingNumChapterFolders(t *testing.T) {
+	dir := t.TempDir()
+	zipPath := filepath.Join(dir, "pack.zip")
+	f, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	add := func(name, body string) {
+		t.Helper()
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("与众不同的兄妹/cover.jpg", "cover")
+	add("与众不同的兄妹/001_与众不同的兄妹/page_001.jpg", "p1")
+	add("与众不同的兄妹/002_与众不同的兄妹/page_001.jpg", "p2")
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	zr, err := zip.OpenReader(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	list, err := parseComicsZip(&zr.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || len(list[0].Chapters) != 2 {
+		t.Fatalf("got %+v", list)
+	}
+	if list[0].Chapters[0].Seq != 1 || list[0].Chapters[0].Title != "与众不同的兄妹 第1话" {
+		t.Fatalf("ch1 %+v", list[0].Chapters[0])
+	}
+	if list[0].Chapters[1].Seq != 2 || list[0].Chapters[1].Title != "与众不同的兄妹 第2话" {
+		t.Fatalf("ch2 %+v", list[0].Chapters[1])
+	}
+}
+
 func TestFinalizeChapterTitle(t *testing.T) {
 	got := finalizeChapterTitle("游戏规则我来定第1话", "游戏规则我来定", "游戏规则我来定", 1)
 	if got != "游戏规则我来定第1话" {
