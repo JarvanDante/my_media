@@ -2,13 +2,29 @@ package v1
 
 import "github.com/gogf/gf/v2/frame/g"
 
+type ComicPageItem struct {
+	Filename string `json:"filename"`
+	Key      string `json:"key"`
+	Url      string `json:"url"`
+}
+
+type ComicChapterItem struct {
+	Seq       int             `json:"seq"`
+	Title     string          `json:"title"`
+	PageCount int             `json:"page_count"`
+	Pages     []ComicPageItem `json:"pages"`
+}
+
 type AssetItem struct {
-	Id          string `json:"id"` // 对外短码(新 16 位，历史可能 8 位)
-	Title       string `json:"title"`
-	CoverUrl    string `json:"cover_url"`
-	PlayUrl     string `json:"play_url"`
-	DurationSec int    `json:"duration_sec"`
-	Picked      bool   `json:"picked"`
+	Id           string `json:"id"` // 对外短码(新 16 位，历史可能 8 位)
+	Title        string `json:"title"`
+	CoverUrl     string `json:"cover_url"`
+	PlayUrl      string `json:"play_url"`
+	DurationSec  int    `json:"duration_sec"`
+	Kind         int    `json:"kind"`
+	Intro        string `json:"intro,omitempty"`
+	ChapterCount int    `json:"chapter_count,omitempty"`
+	Picked       bool   `json:"picked"`
 }
 
 type ListReq struct {
@@ -16,6 +32,7 @@ type ListReq struct {
 	Page    int    `json:"page" d:"1"`
 	Size    int    `json:"size" d:"20"`
 	Keyword string `json:"keyword"`
+	Kind    int    `json:"kind" d:"0"` // 0视频 1漫画；默认视频以免旧站点拉到漫画
 }
 
 type ListRes struct {
@@ -30,7 +47,9 @@ type DetailReq struct {
 
 type DetailRes struct {
 	AssetItem
-	PlayKey string `json:"play_key"`
+	PlayKey  string             `json:"play_key"`
+	Intro    string             `json:"intro,omitempty"`
+	Chapters []ComicChapterItem `json:"chapters,omitempty"`
 }
 
 type PickReq struct {
@@ -39,12 +58,16 @@ type PickReq struct {
 }
 
 type PickRes struct {
-	Id          string `json:"id"`
-	Title       string `json:"title"`
-	CoverUrl    string `json:"cover_url"`
-	PlayUrl     string `json:"play_url"`
-	PlayKey     string `json:"play_key"`
-	DurationSec int    `json:"duration_sec"`
+	Id           string             `json:"id"`
+	Title        string             `json:"title"`
+	CoverUrl     string             `json:"cover_url"`
+	PlayUrl      string             `json:"play_url"`
+	PlayKey      string             `json:"play_key"`
+	DurationSec  int                `json:"duration_sec"`
+	Kind         int                `json:"kind"`
+	Intro        string             `json:"intro,omitempty"`
+	ChapterCount int                `json:"chapter_count,omitempty"`
+	Chapters     []ComicChapterItem `json:"chapters,omitempty"`
 }
 
 type PickListReq struct {

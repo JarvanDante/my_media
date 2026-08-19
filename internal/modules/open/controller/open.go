@@ -10,7 +10,9 @@ import (
 	"github.com/gogf/gf/v2/errors/gerror"
 	"github.com/gogf/gf/v2/frame/g"
 
+	adminv1 "github.com/JarvanDante/my_media/api/admin/asset/v1"
 	v1 "github.com/JarvanDante/my_media/api/open/asset/v1"
+	"github.com/JarvanDante/my_media/internal/consts"
 	"github.com/JarvanDante/my_media/internal/dao"
 	"github.com/JarvanDante/my_media/internal/modules/asset/domain"
 	"github.com/JarvanDante/my_media/internal/modules/asset/service"
@@ -26,8 +28,12 @@ type Open struct {
 func NewOpen(svc service.Asset) *Open { return &Open{svc: svc} }
 
 func (c *Open) List(ctx context.Context, req *v1.ListReq) (res *v1.ListRes, err error) {
+	kind := req.Kind
+	if kind < 0 {
+		kind = consts.KindVideo
+	}
 	list, total, err := c.svc.List(ctx, domain.ListFilter{
-		Page: req.Page, Size: req.Size, Keyword: req.Keyword, ReadyOnly: true, Kind: 0,
+		Page: req.Page, Size: req.Size, Keyword: req.Keyword, ReadyOnly: true, Kind: kind,
 	})
 	if err != nil {
 		return nil, err
@@ -45,10 +51,7 @@ func (c *Open) List(ctx context.Context, req *v1.ListReq) (res *v1.ListRes, err 
 	}
 	res = &v1.ListRes{Total: total, List: make([]v1.AssetItem, 0, len(list))}
 	for _, a := range list {
-		res.List = append(res.List, v1.AssetItem{
-			Id: a.Code, Title: a.Title, CoverUrl: playsign.WrapCover(a.Code, a.CoverUrl, siteCode),
-			PlayUrl: playsign.Wrap(a.Code, a.PlayUrl, siteCode), DurationSec: a.DurationSec, Picked: picked[a.Code],
-		})
+		res.List = append(res.List, toOpenItem(a, picked[a.Code], siteCode))
 	}
 	return res, nil
 }
@@ -68,13 +71,16 @@ func (c *Open) Detail(ctx context.Context, req *v1.DetailReq) (res *v1.DetailRes
 	if err != nil {
 		return nil, err
 	}
-	return &v1.DetailRes{
-		AssetItem: v1.AssetItem{
-			Id: a.Code, Title: a.Title, CoverUrl: playsign.WrapCover(a.Code, a.CoverUrl, siteCode),
-			PlayUrl: playsign.Wrap(a.Code, a.PlayUrl, siteCode), DurationSec: a.DurationSec, Picked: picked[a.Code],
-		},
-		PlayKey: a.PlayKey,
-	}, nil
+	item := toOpenItem(*a, picked[a.Code], siteCode)
+	res = &v1.DetailRes{AssetItem: item, PlayKey: a.PlayKey, Intro: a.Intro}
+	if a.Kind == consts.KindComics {
+		chs, e := c.svc.ComicChapters(ctx, a.Code)
+		if e != nil {
+			return nil, e
+		}
+		res.Chapters = toOpenChapters(chs)
+	}
+	return res, nil
 }
 
 func (c *Open) Pick(ctx context.Context, req *v1.PickReq) (res *v1.PickRes, err error) {
@@ -91,10 +97,20 @@ func (c *Open) Pick(ctx context.Context, req *v1.PickReq) (res *v1.PickRes, err 
 	if a == nil {
 		return nil, gerror.NewCode(errcode.CodeNotFound, "资产不存在")
 	}
-	return &v1.PickRes{
-		Id: a.Code, Title: a.Title, CoverUrl: playsign.WrapCover(a.Code, a.CoverUrl, siteCode),
-		PlayUrl: playsign.Wrap(a.Code, a.PlayUrl, siteCode), PlayKey: a.PlayKey, DurationSec: a.DurationSec,
-	}, nil
+	item := toOpenItem(*a, true, siteCode)
+	res = &v1.PickRes{
+		Id: a.Code, Title: a.Title, CoverUrl: item.CoverUrl, PlayUrl: item.PlayUrl,
+		PlayKey: a.PlayKey, DurationSec: a.DurationSec, Kind: a.Kind, Intro: a.Intro,
+		ChapterCount: a.ChapterCount,
+	}
+	if a.Kind == consts.KindComics {
+		chs, e := c.svc.ComicChapters(ctx, a.Code)
+		if e != nil {
+			return nil, e
+		}
+		res.Chapters = toOpenChapters(chs)
+	}
+	return res, nil
 }
 
 func (c *Open) PickList(ctx context.Context, req *v1.PickListReq) (res *v1.PickListRes, err error) {
@@ -157,4 +173,31 @@ func (c *Open) PlayToken(ctx context.Context, req *v1.PlayTokenReq) (res *v1.Pla
 	}
 	playURL, exp := playsign.SignURL(a.Code, siteCode, ttl, req.PreviewSec, req.ClientIp, a.PlayUrl)
 	return &v1.PlayTokenRes{PlayUrl: playURL, ExpiresAt: exp}, nil
+}
+
+func toOpenItem(a domain.Asset, picked bool, siteCode string) v1.AssetItem {
+	cover, play := a.CoverUrl, a.PlayUrl
+	if a.Kind != consts.KindComics {
+		cover = playsign.WrapCover(a.Code, a.CoverUrl, siteCode)
+		play = playsign.Wrap(a.Code, a.PlayUrl, siteCode)
+	}
+	return v1.AssetItem{
+		Id: a.Code, Title: a.Title, CoverUrl: cover, PlayUrl: play,
+		DurationSec: a.DurationSec, Kind: a.Kind, Intro: a.Intro,
+		ChapterCount: a.ChapterCount, Picked: picked,
+	}
+}
+
+func toOpenChapters(chs []adminv1.ComicChapterItem) []v1.ComicChapterItem {
+	out := make([]v1.ComicChapterItem, 0, len(chs))
+	for _, ch := range chs {
+		pages := make([]v1.ComicPageItem, 0, len(ch.Pages))
+		for _, p := range ch.Pages {
+			pages = append(pages, v1.ComicPageItem{Filename: p.Filename, Key: p.Key, Url: p.Url})
+		}
+		out = append(out, v1.ComicChapterItem{
+			Seq: ch.Seq, Title: ch.Title, PageCount: ch.PageCount, Pages: pages,
+		})
+	}
+	return out
 }
