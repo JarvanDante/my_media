@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	v1 "github.com/JarvanDante/my_media/api/admin/asset/v1"
+	"github.com/JarvanDante/my_media/internal/consts"
 	"github.com/JarvanDante/my_media/internal/modules/asset/domain"
 	"github.com/JarvanDante/my_media/internal/modules/asset/service"
 	"github.com/JarvanDante/my_media/internal/shared/errcode"
@@ -31,7 +32,14 @@ func New(repo domain.Repository, store *storage.Minio, bus *mq.Bus) service.Asse
 }
 
 func (s *sAsset) List(ctx context.Context, f domain.ListFilter) ([]domain.Asset, int, error) {
-	return s.repo.List(ctx, f)
+	list, total, err := s.repo.List(ctx, f)
+	if err != nil {
+		return nil, 0, err
+	}
+	for i := range list {
+		s.decorateCover(ctx, &list[i])
+	}
+	return list, total, nil
 }
 
 func (s *sAsset) Create(ctx context.Context, title, coverUrl, remark string) (string, error) {
@@ -39,7 +47,12 @@ func (s *sAsset) Create(ctx context.Context, title, coverUrl, remark string) (st
 }
 
 func (s *sAsset) Get(ctx context.Context, code string) (*domain.Asset, error) {
-	return s.repo.GetByCode(ctx, code)
+	a, err := s.repo.GetByCode(ctx, code)
+	if err != nil {
+		return nil, err
+	}
+	s.decorateCover(ctx, a)
+	return a, nil
 }
 
 func (s *sAsset) Delete(ctx context.Context, code string) (int, error) {
@@ -101,6 +114,7 @@ func objectPrefixesForAsset(a *domain.Asset) []string {
 	if a.Code != "" {
 		add("media/source/" + a.Code)
 		add("media/hls/" + a.Code)
+		add(consts.PrefixComics + a.Code)
 	}
 	// 兼容早期用数字主键拼路径：media/hls/4/index.m3u8
 	if a.PlayKey != "" {
@@ -143,6 +157,9 @@ func (s *sAsset) PresignUpload(ctx context.Context, code, filename string) (*v1.
 	if a == nil {
 		return nil, gerror.NewCode(errcode.CodeNotFound, "资产不存在")
 	}
+	if a.Kind == consts.KindComics {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, "漫画请用批量 zip 导入，不必上传视频原片")
+	}
 	ext := strings.ToLower(filepath.Ext(filename))
 	if ext == "" {
 		ext = ".mp4"
@@ -178,6 +195,9 @@ func (s *sAsset) TriggerTranscode(ctx context.Context, code string, coverSeekSec
 	}
 	if a == nil {
 		return "", gerror.NewCode(errcode.CodeNotFound, "资产不存在")
+	}
+	if a.Kind == consts.KindComics {
+		return "", gerror.NewCode(errcode.CodeBadRequest, "漫画无需转码")
 	}
 	if a.SourceBucket == "" || a.SourceKey == "" {
 		return "", gerror.NewCode(errcode.CodeBadRequest, "请先获取上传地址并上传原片")

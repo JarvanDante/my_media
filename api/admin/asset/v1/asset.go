@@ -10,6 +10,9 @@ type AssetItem struct {
 	TranscodeStatus string `json:"transcode_status"`
 	PlayUrl         string `json:"play_url"`
 	DurationSec     int    `json:"duration_sec"`
+	Kind            int    `json:"kind"`
+	Category        string `json:"category"`
+	ChapterCount    int    `json:"chapter_count"`
 	CreatedAt       string `json:"created_at"`
 }
 
@@ -19,6 +22,7 @@ type ListReq struct {
 	Size    int    `json:"size" d:"20"`
 	Keyword string `json:"keyword"`
 	Status  int    `json:"status" d:"-1"`
+	Kind    int    `json:"kind" d:"-1"` // -1全部 0视频 1漫画
 }
 
 type ListRes struct {
@@ -50,6 +54,8 @@ type DetailRes struct {
 	TranscodeJobId string `json:"transcode_job_id"`
 	TranscodeError string `json:"transcode_error"`
 	Remark         string `json:"remark"`
+	Intro          string `json:"intro"`
+	Chapters       []ComicChapterItem `json:"chapters,omitempty"`
 }
 
 type UploadURLReq struct {
@@ -83,4 +89,41 @@ type DeleteReq struct {
 
 type DeleteRes struct {
 	DeletedObjects int `json:"deleted_objects"`
+}
+
+type ComicPageItem struct {
+	Filename string `json:"filename"`
+	Key      string `json:"key"`
+	Url      string `json:"url"`
+}
+
+type ComicChapterItem struct {
+	Seq       int             `json:"seq"`
+	Title     string          `json:"title"`
+	PageCount int             `json:"page_count"`
+	Pages     []ComicPageItem `json:"pages"`
+}
+
+type ImportComicsReq struct {
+	g.Meta `path:"/admin/comics/import" method:"post" mime:"multipart/form-data" tags:"Admin/Asset" summary:"漫画 zip 批量入库"`
+}
+
+type ImportComicsItem struct {
+	Id           string `json:"id"`
+	Title        string `json:"title"`
+	Category     string `json:"category"`
+	ChapterCount int    `json:"chapter_count"`
+	PageCount    int    `json:"page_count"`
+}
+
+type ImportComicsFail struct {
+	Title string `json:"title"`
+	Error string `json:"error"`
+}
+
+type ImportComicsRes struct {
+	Imported    int                `json:"imported"`
+	FailedCount int                `json:"failed_count"`
+	List        []ImportComicsItem `json:"list"`
+	Failed      []ImportComicsFail `json:"failed"`
 }

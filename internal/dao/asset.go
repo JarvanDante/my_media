@@ -31,6 +31,9 @@ func (r *assetRepo) List(ctx context.Context, f domain.ListFilter) ([]domain.Ass
 	if f.Keyword != "" {
 		m = m.WhereLike("title", "%"+f.Keyword+"%")
 	}
+	if f.Kind >= 0 {
+		m = m.Where("kind", f.Kind)
+	}
 	if f.ReadyOnly {
 		m = m.Where("status", consts.AssetStatusReady)
 	} else if f.Status >= 0 {
@@ -99,6 +102,9 @@ func (r *assetRepo) Delete(ctx context.Context, pk int64) error {
 		return errors.New("invalid asset pk")
 	}
 	return g.DB().Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
+		if _, err := tx.Model("media_comic_chapter").Ctx(ctx).Where("asset_id", pk).Delete(); err != nil {
+			return err
+		}
 		if _, err := tx.Model("site_asset_pick").Ctx(ctx).Where("asset_id", pk).Delete(); err != nil {
 			return err
 		}
@@ -309,6 +315,10 @@ func mapAsset(m g.Map) domain.Asset {
 		TranscodeJobId:  g.NewVar(m["transcode_job_id"]).String(),
 		TranscodeError:  g.NewVar(m["transcode_error"]).String(),
 		Remark:          g.NewVar(m["remark"]).String(),
+		Kind:            g.NewVar(m["kind"]).Int(),
+		Category:        g.NewVar(m["category"]).String(),
+		Intro:           g.NewVar(m["intro"]).String(),
+		ChapterCount:    g.NewVar(m["chapter_count"]).Int(),
 		CreatedAt:       g.NewVar(m["created_at"]).String(),
 	}
 }

@@ -17,6 +17,10 @@ type Asset struct {
 	TranscodeJobId  string
 	TranscodeError  string
 	Remark          string
+	Kind            int
+	Category        string
+	Intro           string
+	ChapterCount    int
 	CreatedAt       string
 }
 
@@ -25,6 +29,7 @@ type ListFilter struct {
 	Size      int
 	Keyword   string
 	Status    int // -1 全部
+	Kind      int // -1 全部  0视频  1漫画
 	ReadyOnly bool
 }
 
@@ -48,9 +53,33 @@ type PickRecord struct {
 	PickedAt    string
 }
 
+type ComicPage struct {
+	Key      string `json:"key"`
+	Filename string `json:"filename"`
+}
+
+type ComicChapter struct {
+	Seq       int
+	Title     string
+	PageCount int
+	Pages     []ComicPage
+}
+
+type ComicsCreateInput struct {
+	Title    string
+	CoverUrl string
+	Category string
+	Intro    string
+	Remark   string
+}
+
 type Repository interface {
 	List(ctx context.Context, f ListFilter) (list []Asset, total int, err error)
 	Create(ctx context.Context, title, coverUrl, remark string) (code string, err error)
+	CreateComics(ctx context.Context, in ComicsCreateInput) (pk int64, code string, err error)
+	UpdateComicsReady(ctx context.Context, pk int64, bucket, coverKey, coverURL string, chapterCount int) error
+	ReplaceComicChapters(ctx context.Context, assetID int64, chapters []ComicChapter) error
+	ListComicChapters(ctx context.Context, assetID int64) ([]ComicChapter, error)
 	GetByCode(ctx context.Context, code string) (*Asset, error)
 	Delete(ctx context.Context, pk int64) error
 	Pick(ctx context.Context, appKey, siteCode, code string) (*Asset, error)

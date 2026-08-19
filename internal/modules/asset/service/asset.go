@@ -18,6 +18,8 @@ type Asset interface {
 	PresignUpload(ctx context.Context, code, filename string) (*v1.UploadURLRes, error)
 	TriggerTranscode(ctx context.Context, code string, coverSeekSec int) (jobID string, err error)
 	HandleTranscodeResult(ctx context.Context, msg transcode.ResultMessage) error
+	ImportComics(ctx context.Context, zipPath string) (*v1.ImportComicsRes, error)
+	ComicChapters(ctx context.Context, code string) ([]v1.ComicChapterItem, error)
 
 	ListPicks(ctx context.Context, appKey string, page, size int) (list []domain.PickRecord, total int, err error)
 	PickedSet(ctx context.Context, appKey string, codes []string) (map[string]bool, error)

@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/url"
 	"strings"
 	"time"
@@ -80,6 +81,42 @@ func (m *Minio) PresignPut(ctx context.Context, bucket, key string) (string, err
 		return "", err
 	}
 	u, err := m.client.PresignedPutObject(ctx, bucket, key, m.expire)
+	if err != nil {
+		return "", err
+	}
+	return u.String(), nil
+}
+
+// PutObject 服务端直写对象(漫画 zip 入库用, 不经过 my_storage)。
+func (m *Minio) PutObject(ctx context.Context, bucket, key, contentType string, body io.Reader, size int64) error {
+	if bucket == "" {
+		bucket = m.bucket
+	}
+	key = strings.TrimLeft(key, "/")
+	if key == "" {
+		return fmt.Errorf("empty object key")
+	}
+	if err := m.EnsureBucket(ctx, bucket); err != nil {
+		return err
+	}
+	opts := miniogo.PutObjectOptions{}
+	if contentType != "" {
+		opts.ContentType = contentType
+	}
+	_, err := m.client.PutObject(ctx, bucket, key, body, size, opts)
+	return err
+}
+
+// PresignGet 生成 GET 预签名, 供总后台预览私有桶图片。
+func (m *Minio) PresignGet(ctx context.Context, bucket, key string) (string, error) {
+	if bucket == "" {
+		bucket = m.bucket
+	}
+	key = strings.TrimLeft(key, "/")
+	if key == "" {
+		return "", fmt.Errorf("empty object key")
+	}
+	u, err := m.client.PresignedGetObject(ctx, bucket, key, m.expire, nil)
 	if err != nil {
 		return "", err
 	}

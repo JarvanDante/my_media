@@ -27,7 +27,7 @@ func NewOpen(svc service.Asset) *Open { return &Open{svc: svc} }
 
 func (c *Open) List(ctx context.Context, req *v1.ListReq) (res *v1.ListRes, err error) {
 	list, total, err := c.svc.List(ctx, domain.ListFilter{
-		Page: req.Page, Size: req.Size, Keyword: req.Keyword, ReadyOnly: true,
+		Page: req.Page, Size: req.Size, Keyword: req.Keyword, ReadyOnly: true, Kind: 0,
 	})
 	if err != nil {
 		return nil, err

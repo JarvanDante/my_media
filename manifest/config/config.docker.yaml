@@ -5,6 +5,7 @@ server:
   address:     ":8004"
   openapiPath: "/api.json"
   swaggerPath: "/swagger"
+  clientMaxBodySize: "256MB"
 
 logger:
   level: "all"
