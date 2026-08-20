@@ -85,6 +85,36 @@ func (c *Admin) Transcode(ctx context.Context, req *v1.TranscodeReq) (res *v1.Tr
 	return &v1.TranscodeRes{JobId: jobID}, nil
 }
 
+const maxCoverUpload = 8 << 20
+
+func (c *Admin) ReplaceCover(ctx context.Context, req *v1.ReplaceCoverReq) (res *v1.ReplaceCoverRes, err error) {
+	r := ghttp.RequestFromCtx(ctx)
+	up := r.GetUploadFile("file")
+	if up == nil {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, "请选择封面图片")
+	}
+	if up.Size > maxCoverUpload {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, "封面不能超过 8MB")
+	}
+	f, err := up.Open()
+	if err != nil {
+		return nil, gerror.Wrap(err, "读取封面失败")
+	}
+	defer f.Close()
+	if err := c.svc.ReplaceCover(ctx, req.Id, up.Filename, f, up.Size); err != nil {
+		return nil, err
+	}
+	a, err := c.svc.Get(ctx, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	cover := ""
+	if a != nil {
+		cover = playsign.WrapCover(a.Code, a.CoverUrl, "admin")
+	}
+	return &v1.ReplaceCoverRes{CoverUrl: cover}, nil
+}
+
 func (c *Admin) Delete(ctx context.Context, req *v1.DeleteReq) (res *v1.DeleteRes, err error) {
 	n, err := c.svc.Delete(ctx, req.Id)
 	if err != nil {

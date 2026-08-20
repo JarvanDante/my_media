@@ -208,6 +208,19 @@ func (r *assetRepo) BindSource(ctx context.Context, pk int64, bucket, key string
 	return err
 }
 
+func (r *assetRepo) UpdateCover(ctx context.Context, pk int64, coverURL, coverKey string, kind int) error {
+	data := g.Map{
+		"cover_url":  coverURL,
+		"updated_at": gtime.Now(),
+	}
+	// 漫画封面挂在 source_key，后台预览靠它签链；视频 source_key 是原片，不能改。
+	if kind == consts.KindComics && coverKey != "" {
+		data["source_key"] = coverKey
+	}
+	_, err := g.DB().Model("media_asset").Ctx(ctx).Where("id", pk).Data(data).Update()
+	return err
+}
+
 func (r *assetRepo) MarkTranscoding(ctx context.Context, pk int64, jobID, profile string) error {
 	return g.DB().Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
 		_, err := tx.Model("media_asset").Ctx(ctx).Where("id", pk).Data(g.Map{

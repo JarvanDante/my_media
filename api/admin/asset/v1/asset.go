@@ -82,6 +82,15 @@ type TranscodeRes struct {
 	JobId string `json:"job_id"`
 }
 
+type ReplaceCoverReq struct {
+	g.Meta `path:"/admin/assets/{id}/cover" method:"post" mime:"multipart/form-data" tags:"Admin/Asset" summary:"替换封面(不转码)"`
+	Id     string `json:"id" in:"path" v:"required|length:8,16"`
+}
+
+type ReplaceCoverRes struct {
+	CoverUrl string `json:"cover_url"`
+}
+
 type DeleteReq struct {
 	g.Meta `path:"/admin/assets/{id}" method:"delete" tags:"Admin/Asset" summary:"删除资产并清理对象存储"`
 	Id     string `json:"id" in:"path" v:"required|length:8,16"`

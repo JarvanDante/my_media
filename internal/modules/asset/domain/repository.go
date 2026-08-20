@@ -87,6 +87,7 @@ type Repository interface {
 	PickedSet(ctx context.Context, appKey string, codes []string) (map[string]bool, error)
 
 	BindSource(ctx context.Context, pk int64, bucket, key string) error
+	UpdateCover(ctx context.Context, pk int64, coverURL, coverKey string, kind int) error
 	MarkTranscoding(ctx context.Context, pk int64, jobID, profile string) error
 	ApplyTranscodeResult(ctx context.Context, r TranscodeResult) error
 }

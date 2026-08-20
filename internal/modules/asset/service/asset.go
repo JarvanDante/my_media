@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"io"
 
 	v1 "github.com/JarvanDante/my_media/api/admin/asset/v1"
 	"github.com/JarvanDante/my_media/internal/modules/asset/domain"
@@ -17,6 +18,7 @@ type Asset interface {
 
 	PresignUpload(ctx context.Context, code, filename string) (*v1.UploadURLRes, error)
 	TriggerTranscode(ctx context.Context, code string, coverSeekSec int) (jobID string, err error)
+	ReplaceCover(ctx context.Context, code, filename string, body io.Reader, size int64) error
 	HandleTranscodeResult(ctx context.Context, msg transcode.ResultMessage) error
 	ImportComics(ctx context.Context, zipPath string) (*v1.ImportComicsRes, error)
 	ComicChapters(ctx context.Context, code string) ([]v1.ComicChapterItem, error)
