@@ -97,11 +97,16 @@ func WrapCover(code, raw, site string) string {
 		return raw
 	}
 	now := time.Now().Unix()
-	return buildURL(code, site, "cover.jpg", now+c.ttl, 0, "", now)
+	file := "cover.bnc"
+	if site == "admin" {
+		// 后台 <img> 不解密, 走网关 cover.jpg 明文预览(同 token 即可)。
+		file = "cover.jpg"
+	}
+	return buildURL(code, site, file, now+c.ttl, 0, "", now)
 }
 
 func isHlsCover(raw, code string) bool {
-	if !strings.Contains(raw, "cover.jpg") {
+	if !strings.Contains(raw, "cover.jpg") && !strings.Contains(raw, "cover.bnc") {
 		return false
 	}
 	return strings.Contains(raw, "/media/hls/"+code+"/") ||

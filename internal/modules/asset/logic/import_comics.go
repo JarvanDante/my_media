@@ -2,6 +2,7 @@ package logic
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	v1 "github.com/JarvanDante/my_media/api/admin/asset/v1"
 	"github.com/JarvanDante/my_media/internal/consts"
 	"github.com/JarvanDante/my_media/internal/modules/asset/domain"
+	"github.com/JarvanDante/my_media/internal/shared/aesbnc"
 	"github.com/JarvanDante/my_media/internal/shared/errcode"
 )
 
@@ -74,17 +76,12 @@ func (s *sAsset) importOneManga(ctx context.Context, manga parsedManga) (*v1.Imp
 	}
 
 	coverFile := manga.Cover
-	coverExt := manga.CoverExt
 	if coverFile == nil && len(manga.Chapters) > 0 && len(manga.Chapters[0].Pages) > 0 {
 		coverFile = manga.Chapters[0].Pages[0].File
-		coverExt = strings.ToLower(path.Ext(manga.Chapters[0].Pages[0].Name))
 	}
-	if coverExt == "" {
-		coverExt = ".jpg"
-	}
-	coverKey := prefix + "cover" + coverExt
+	coverKey := prefix + "cover.bnc"
 	if coverFile != nil {
-		if err := putZipFile(ctx, s.store, bucket, coverKey, guessImageCT(coverExt), coverFile); err != nil {
+		if err := putZipCover(ctx, s.store, bucket, coverKey, coverFile); err != nil {
 			rollback()
 			return nil, err
 		}
@@ -184,6 +181,25 @@ func putZipFile(ctx context.Context, store interface {
 	}
 	defer rc.Close()
 	return store.PutObject(ctx, bucket, key, contentType, rc, int64(f.UncompressedSize64))
+}
+
+func putZipCover(ctx context.Context, store interface {
+	PutObject(context.Context, string, string, string, io.Reader, int64) error
+}, bucket, key string, f *zip.File) error {
+	rc, err := f.Open()
+	if err != nil {
+		return err
+	}
+	plain, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil {
+		return err
+	}
+	enc, err := aesbnc.Encrypt(plain)
+	if err != nil {
+		return err
+	}
+	return store.PutObject(ctx, bucket, key, "application/octet-stream", bytes.NewReader(enc), int64(len(enc)))
 }
 
 func guessImageCT(ext string) string {

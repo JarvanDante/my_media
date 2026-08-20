@@ -1,6 +1,7 @@
 package logic
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"github.com/gogf/gf/v2/errors/gerror"
 
 	"github.com/JarvanDante/my_media/internal/consts"
+	"github.com/JarvanDante/my_media/internal/shared/aesbnc"
 	"github.com/JarvanDante/my_media/internal/shared/errcode"
 )
 
@@ -39,17 +41,32 @@ func (s *sAsset) ReplaceCover(ctx context.Context, code, filename string, body i
 		return gerror.NewCode(errcode.CodeNotFound, "资产不存在")
 	}
 
-	// 播放网关固定取 cover.jpg，必须覆盖同名对象，不能改路径。
-	key := consts.HLSObjectPrefix(a.Kind, a.Code) + "cover.jpg"
+	plain, err := io.ReadAll(io.LimitReader(body, maxCoverBytes+1))
+	if err != nil {
+		return gerror.Wrap(err, "读取封面失败")
+	}
+	if int64(len(plain)) > maxCoverBytes {
+		return gerror.NewCode(errcode.CodeBadRequest, "封面不能超过 8MB")
+	}
+	enc, err := aesbnc.Encrypt(plain)
+	if err != nil {
+		return gerror.Wrap(err, "封面加密失败")
+	}
+
+	key := consts.HLSObjectPrefix(a.Kind, a.Code) + "cover.bnc"
 	if a.Kind == consts.KindComics {
-		key = consts.PrefixComics + a.Code + "/cover.jpg"
+		key = consts.PrefixComics + a.Code + "/cover.bnc"
 	}
 	bucket := a.SourceBucket
 	if bucket == "" {
 		bucket = s.store.Bucket()
 	}
-	if err := s.store.PutObject(ctx, bucket, key, guessImageCT(ext), body, size); err != nil {
+	if err := s.store.PutObject(ctx, bucket, key, "application/octet-stream", bytes.NewReader(enc), int64(len(enc))); err != nil {
 		return gerror.Wrap(err, "上传封面失败")
+	}
+	oldJpg := strings.TrimSuffix(key, ".bnc") + ".jpg"
+	if oldJpg != key {
+		_ = s.store.RemoveObject(ctx, bucket, oldJpg)
 	}
 	if a.Kind == consts.KindComics && a.SourceKey != "" && a.SourceKey != key {
 		_ = s.store.RemoveObject(ctx, bucket, a.SourceKey)
