@@ -40,7 +40,7 @@ func (s *sAsset) ReplaceCover(ctx context.Context, code, filename string, body i
 	}
 
 	// 播放网关固定取 cover.jpg，必须覆盖同名对象，不能改路径。
-	key := "media/hls/" + a.Code + "/cover.jpg"
+	key := consts.HLSObjectPrefix(a.Kind, a.Code) + "cover.jpg"
 	if a.Kind == consts.KindComics {
 		key = consts.PrefixComics + a.Code + "/cover.jpg"
 	}

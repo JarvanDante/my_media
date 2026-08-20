@@ -22,7 +22,7 @@ type ListReq struct {
 	Size    int    `json:"size" d:"20"`
 	Keyword string `json:"keyword"`
 	Status  int    `json:"status" d:"-1"`
-	Kind    int    `json:"kind" d:"-1"` // -1全部 0视频 1漫画
+	Kind    int    `json:"kind" d:"-1"` // -1全部 0视频 1漫画 2动漫
 }
 
 type ListRes struct {
@@ -35,6 +35,7 @@ type CreateReq struct {
 	Title    string `json:"title" v:"required#标题必填"`
 	CoverUrl string `json:"cover_url"`
 	Remark   string `json:"remark"`
+	Kind     int    `json:"kind" d:"0"` // 0视频 2动漫；漫画请走 zip 导入
 }
 
 type CreateRes struct {

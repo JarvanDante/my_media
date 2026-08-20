@@ -11,7 +11,7 @@ import (
 
 type Asset interface {
 	List(ctx context.Context, f domain.ListFilter) (list []domain.Asset, total int, err error)
-	Create(ctx context.Context, title, coverUrl, remark string) (code string, err error)
+	Create(ctx context.Context, title, coverUrl, remark string, kind int) (code string, err error)
 	Get(ctx context.Context, code string) (*domain.Asset, error)
 	Delete(ctx context.Context, code string) (deletedObjects int, err error)
 	Pick(ctx context.Context, appKey, siteCode, code string) (*domain.Asset, error)

@@ -29,7 +29,7 @@ type ListFilter struct {
 	Size      int
 	Keyword   string
 	Status    int // -1 全部
-	Kind      int // -1 全部  0视频  1漫画
+	Kind      int // -1 全部  0视频  1漫画  2动漫
 	ReadyOnly bool
 }
 
@@ -75,7 +75,7 @@ type ComicsCreateInput struct {
 
 type Repository interface {
 	List(ctx context.Context, f ListFilter) (list []Asset, total int, err error)
-	Create(ctx context.Context, title, coverUrl, remark string) (code string, err error)
+	Create(ctx context.Context, title, coverUrl, remark string, kind int) (code string, err error)
 	CreateComics(ctx context.Context, in ComicsCreateInput) (pk int64, code string, err error)
 	UpdateComicsReady(ctx context.Context, pk int64, bucket, coverKey, coverURL string, chapterCount int) error
 	ReplaceComicChapters(ctx context.Context, assetID int64, chapters []ComicChapter) error

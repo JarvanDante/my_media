@@ -38,7 +38,7 @@ func (c *Admin) List(ctx context.Context, req *v1.ListReq) (res *v1.ListRes, err
 }
 
 func (c *Admin) Create(ctx context.Context, req *v1.CreateReq) (res *v1.CreateRes, err error) {
-	code, err := c.svc.Create(ctx, req.Title, req.CoverUrl, req.Remark)
+	code, err := c.svc.Create(ctx, req.Title, req.CoverUrl, req.Remark, req.Kind)
 	if err != nil {
 		return nil, err
 	}

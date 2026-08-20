@@ -101,7 +101,11 @@ func WrapCover(code, raw, site string) string {
 }
 
 func isHlsCover(raw, code string) bool {
-	return strings.Contains(raw, "/media/hls/"+code+"/") && strings.Contains(raw, "cover.jpg")
+	if !strings.Contains(raw, "cover.jpg") {
+		return false
+	}
+	return strings.Contains(raw, "/media/hls/"+code+"/") ||
+		strings.Contains(raw, "/cartoon/hls/"+code+"/")
 }
 
 func isPrivateMediaCover(raw, code string) bool {
@@ -111,7 +115,9 @@ func isPrivateMediaCover(raw, code string) bool {
 	if strings.Contains(raw, "host.docker.internal") || strings.Contains(raw, ":19000/") {
 		return true
 	}
-	return strings.Contains(raw, "/comics/"+code+"/") || strings.Contains(raw, "/my-media/comics/")
+	return strings.Contains(raw, "/comics/"+code+"/") ||
+		strings.Contains(raw, "/my-media/comics/") ||
+		strings.Contains(raw, "/my-media/cartoon/")
 }
 
 // Enabled 网关是否已配置。

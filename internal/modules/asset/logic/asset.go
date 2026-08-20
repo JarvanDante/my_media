@@ -42,8 +42,11 @@ func (s *sAsset) List(ctx context.Context, f domain.ListFilter) ([]domain.Asset,
 	return list, total, nil
 }
 
-func (s *sAsset) Create(ctx context.Context, title, coverUrl, remark string) (string, error) {
-	return s.repo.Create(ctx, title, coverUrl, remark)
+func (s *sAsset) Create(ctx context.Context, title, coverUrl, remark string, kind int) (string, error) {
+	if !consts.IsHLSKind(kind) {
+		return "", gerror.NewCode(errcode.CodeBadRequest, "创建只支持视频或动漫，漫画请用 zip 导入")
+	}
+	return s.repo.Create(ctx, title, coverUrl, remark, kind)
 }
 
 func (s *sAsset) Get(ctx context.Context, code string) (*domain.Asset, error) {
@@ -114,6 +117,8 @@ func objectPrefixesForAsset(a *domain.Asset) []string {
 	if a.Code != "" {
 		add("media/source/" + a.Code)
 		add("media/hls/" + a.Code)
+		add(consts.PrefixCartoon + "source/" + a.Code)
+		add(consts.PrefixCartoon + "hls/" + a.Code)
 		add(consts.PrefixComics + a.Code)
 	}
 	// 兼容早期用数字主键拼路径：media/hls/4/index.m3u8
@@ -164,7 +169,7 @@ func (s *sAsset) PresignUpload(ctx context.Context, code, filename string) (*v1.
 	if ext == "" {
 		ext = ".mp4"
 	}
-	key := fmt.Sprintf("media/source/%s/%s%s", code, uuid.NewString(), ext)
+	key := consts.SourceObjectPrefix(a.Kind, code) + uuid.NewString() + ext
 	bucket := s.store.Bucket()
 	url, err := s.store.PresignPut(ctx, bucket, key)
 	if err != nil {
@@ -215,7 +220,7 @@ func (s *sAsset) TriggerTranscode(ctx context.Context, code string, coverSeekSec
 
 	profile := g.Cfg().MustGet(ctx, "transcode.profile", transcode.ProfileH264HLS).String()
 	jobID := fmt.Sprintf("media_%s_%d", code, time.Now().Unix())
-	prefix := fmt.Sprintf("media/hls/%s/", code)
+	prefix := consts.HLSObjectPrefix(a.Kind, code)
 
 	job := transcode.JobMessage{
 		SchemaVersion: 1,

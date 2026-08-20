@@ -54,7 +54,7 @@ func (r *assetRepo) List(ctx context.Context, f domain.ListFilter) ([]domain.Ass
 	return list, total, nil
 }
 
-func (r *assetRepo) Create(ctx context.Context, title, coverUrl, remark string) (string, error) {
+func (r *assetRepo) Create(ctx context.Context, title, coverUrl, remark string, kind int) (string, error) {
 	for i := 0; i < 8; i++ {
 		c, err := kit.NewPublicID()
 		if err != nil {
@@ -72,6 +72,7 @@ func (r *assetRepo) Create(ctx context.Context, title, coverUrl, remark string) 
 			"title":            title,
 			"cover_url":        coverUrl,
 			"remark":           remark,
+			"kind":             kind,
 			"status":           consts.AssetStatusDraft,
 			"transcode_status": "none",
 			"created_at":       gtime.Now(),

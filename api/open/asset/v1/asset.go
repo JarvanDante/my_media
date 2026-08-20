@@ -32,7 +32,7 @@ type ListReq struct {
 	Page    int    `json:"page" d:"1"`
 	Size    int    `json:"size" d:"20"`
 	Keyword string `json:"keyword"`
-	Kind    int    `json:"kind" d:"0"` // 0视频 1漫画；默认视频以免旧站点拉到漫画
+	Kind    int    `json:"kind" d:"0"` // 0视频 1漫画 2动漫；默认视频以免旧站点拉到其它类型
 }
 
 type ListRes struct {
