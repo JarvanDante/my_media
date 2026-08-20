@@ -16,6 +16,7 @@ import (
 	"github.com/JarvanDante/my_media/internal/modules/client"
 	"github.com/JarvanDante/my_media/internal/modules/health"
 	playmod "github.com/JarvanDante/my_media/internal/modules/play"
+	"github.com/JarvanDante/my_media/internal/shared/aesbnc"
 	"github.com/JarvanDante/my_media/internal/shared/middleware"
 	"github.com/JarvanDante/my_media/internal/shared/mq"
 	"github.com/JarvanDante/my_media/internal/shared/storage"
@@ -27,6 +28,7 @@ var Main = gcmd.Command{
 	Brief: "媒资中心(PaaS) API",
 	Func: func(ctx context.Context, parser *gcmd.Parser) error {
 		boot.InitNacosConfig(ctx) // 若配置了 NACOS_* 则切到 Nacos, 否则本地 config
+		aesbnc.SetKey(g.Cfg().MustGet(ctx, "image_aes.key", aesbnc.DefaultKey).String())
 		store, err := storage.NewMinio(ctx)
 		if err != nil {
 			g.Log().Warningf(ctx, "minio init failed: %v (upload/transcode 将不可用)", err)
