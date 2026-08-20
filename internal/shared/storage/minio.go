@@ -36,9 +36,18 @@ func NewMinio(ctx context.Context) (*Minio, error) {
 		expireSec = 7200
 	}
 
+	// Region 固定可跳过 GetBucketLocation。预签名 client 指向浏览器 Host(127.0.0.1:19000)
+	// 时，容器内拨这个地址会 connection refused，不能再探活。
+	region := g.Cfg().MustGet(ctx, "minio.region", "us-east-1").String()
+	if region == "" {
+		region = "us-east-1"
+	}
+
 	cli, err := miniogo.New(endpoint, &miniogo.Options{
-		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
-		Secure: useSSL,
+		Creds:        credentials.NewStaticV4(accessKey, secretKey, ""),
+		Secure:       useSSL,
+		Region:       region,
+		BucketLookup: miniogo.BucketLookupPath,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("minio new: %w", err)
@@ -55,8 +64,10 @@ func NewMinio(ctx context.Context) (*Minio, error) {
 	if publicBase != "" {
 		if b, perr := url.Parse(publicBase); perr == nil && b.Host != "" && b.Host != endpoint {
 			if pc, perr := miniogo.New(b.Host, &miniogo.Options{
-				Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
-				Secure: b.Scheme == "https",
+				Creds:        credentials.NewStaticV4(accessKey, secretKey, ""),
+				Secure:       b.Scheme == "https",
+				Region:       region,
+				BucketLookup: miniogo.BucketLookupPath,
 			}); perr == nil {
 				m.presignCli = pc
 			}
