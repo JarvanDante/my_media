@@ -6,8 +6,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"path"
-	"strings"
 
 	"github.com/gogf/gf/v2/errors/gerror"
 
@@ -79,9 +77,9 @@ func (s *sAsset) importOneManga(ctx context.Context, manga parsedManga) (*v1.Imp
 	if coverFile == nil && len(manga.Chapters) > 0 && len(manga.Chapters[0].Pages) > 0 {
 		coverFile = manga.Chapters[0].Pages[0].File
 	}
-	coverKey := prefix + "cover.bnc"
+	coverKey := prefix + "cover" + aesbnc.Ext
 	if coverFile != nil {
-		if err := putZipCover(ctx, s.store, bucket, coverKey, coverFile); err != nil {
+		if err := putZipEncrypted(ctx, s.store, bucket, coverKey, coverFile); err != nil {
 			rollback()
 			return nil, err
 		}
@@ -92,10 +90,10 @@ func (s *sAsset) importOneManga(ctx context.Context, manga parsedManga) (*v1.Imp
 	for _, ch := range manga.Chapters {
 		pages := make([]domain.ComicPage, 0, len(ch.Pages))
 		for i, p := range ch.Pages {
-			ext := strings.ToLower(path.Ext(p.Name))
-			name := fmt.Sprintf("page_%03d%s", i+1, ext)
+			// 内页与封面一致：AES 后统一 page_XXX.bnc（zip 源仍可为 jpg/png）
+			name := fmt.Sprintf("page_%03d%s", i+1, aesbnc.Ext)
 			key := fmt.Sprintf("%sch%03d/%s", prefix, ch.Seq, name)
-			if err := putZipFile(ctx, s.store, bucket, key, guessImageCT(ext), p.File); err != nil {
+			if err := putZipEncrypted(ctx, s.store, bucket, key, p.File); err != nil {
 				rollback()
 				return nil, err
 			}
@@ -172,18 +170,7 @@ func (s *sAsset) signObject(ctx context.Context, bucket, key string) string {
 	return u
 }
 
-func putZipFile(ctx context.Context, store interface {
-	PutObject(context.Context, string, string, string, io.Reader, int64) error
-}, bucket, key, contentType string, f *zip.File) error {
-	rc, err := f.Open()
-	if err != nil {
-		return err
-	}
-	defer rc.Close()
-	return store.PutObject(ctx, bucket, key, contentType, rc, int64(f.UncompressedSize64))
-}
-
-func putZipCover(ctx context.Context, store interface {
+func putZipEncrypted(ctx context.Context, store interface {
 	PutObject(context.Context, string, string, string, io.Reader, int64) error
 }, bucket, key string, f *zip.File) error {
 	rc, err := f.Open()
@@ -200,17 +187,4 @@ func putZipCover(ctx context.Context, store interface {
 		return err
 	}
 	return store.PutObject(ctx, bucket, key, "application/octet-stream", bytes.NewReader(enc), int64(len(enc)))
-}
-
-func guessImageCT(ext string) string {
-	switch strings.ToLower(ext) {
-	case ".png":
-		return "image/png"
-	case ".webp":
-		return "image/webp"
-	case ".gif":
-		return "image/gif"
-	default:
-		return "image/jpeg"
-	}
 }

@@ -105,6 +105,60 @@ func WrapCover(code, raw, site string) string {
 	return buildURL(code, site, file, now+c.ttl, 0, "", now)
 }
 
+// WrapPage 漫画页图签名。objectKey 形如 comics/{code}/ch001/page_001.bnc。
+// admin → .jpg 明文预览；其它站点 → .bnc 密文给 H5。网关未配置时返回空串由调用方回退。
+func WrapPage(code, objectKey, site string) string {
+	once.Do(load)
+	if !Enabled() || code == "" {
+		return ""
+	}
+	rel := comicPageRel(code, objectKey)
+	if rel == "" {
+		return ""
+	}
+	if site == "admin" {
+		rel = withImageExt(rel, ".jpg")
+	} else {
+		rel = withImageExt(rel, ".bnc")
+	}
+	now := time.Now().Unix()
+	return buildURL(code, site, rel, now+c.ttl, 0, "", now)
+}
+
+func comicPageRel(code, key string) string {
+	key = strings.TrimLeft(strings.TrimSpace(key), "/")
+	if i := strings.Index(key, "?"); i >= 0 {
+		key = key[:i]
+	}
+	if code == "" || key == "" {
+		return ""
+	}
+	prefix := "comics/" + code + "/"
+	if !strings.HasPrefix(key, prefix) {
+		if j := strings.Index(key, "/"+prefix); j >= 0 {
+			key = key[j+1:]
+		}
+	}
+	if !strings.HasPrefix(key, prefix) {
+		return ""
+	}
+	rel := key[len(prefix):]
+	if rel == "" || strings.Contains(rel, "..") {
+		return ""
+	}
+	if strings.Count(rel, "/") > 1 {
+		return ""
+	}
+	return rel
+}
+
+func withImageExt(rel, ext string) string {
+	if i := strings.LastIndex(rel, "."); i >= 0 {
+		return rel[:i] + ext
+	}
+	return rel + ext
+}
+
 func isHlsCover(raw, code string) bool {
 	if !strings.Contains(raw, "cover.jpg") && !strings.Contains(raw, "cover.bnc") {
 		return false

@@ -68,7 +68,7 @@ func (c *Admin) Detail(ctx context.Context, req *v1.DetailReq) (res *v1.DetailRe
 		if e != nil {
 			return nil, e
 		}
-		res.Chapters = chs
+		res.Chapters = wrapAdminComicPages(a.Code, chs)
 	}
 	return res, nil
 }
@@ -161,4 +161,15 @@ func toAdminItem(a domain.Asset) v1.AssetItem {
 		DurationSec: a.DurationSec, Kind: a.Kind, Category: a.Category,
 		ChapterCount: a.ChapterCount, CreatedAt: a.CreatedAt,
 	}
+}
+
+func wrapAdminComicPages(code string, chs []v1.ComicChapterItem) []v1.ComicChapterItem {
+	for i := range chs {
+		for j := range chs[i].Pages {
+			if u := playsign.WrapPage(code, chs[i].Pages[j].Key, "admin"); u != "" {
+				chs[i].Pages[j].Url = u
+			}
+		}
+	}
+	return chs
 }

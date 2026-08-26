@@ -78,7 +78,7 @@ func (c *Open) Detail(ctx context.Context, req *v1.DetailReq) (res *v1.DetailRes
 		if e != nil {
 			return nil, e
 		}
-		res.Chapters = toOpenChapters(chs)
+		res.Chapters = toOpenChapters(a.Code, siteCode, chs)
 	}
 	return res, nil
 }
@@ -108,7 +108,7 @@ func (c *Open) Pick(ctx context.Context, req *v1.PickReq) (res *v1.PickRes, err 
 		if e != nil {
 			return nil, e
 		}
-		res.Chapters = toOpenChapters(chs)
+		res.Chapters = toOpenChapters(a.Code, siteCode, chs)
 	}
 	return res, nil
 }
@@ -188,12 +188,16 @@ func toOpenItem(a domain.Asset, picked bool, siteCode string) v1.AssetItem {
 	}
 }
 
-func toOpenChapters(chs []adminv1.ComicChapterItem) []v1.ComicChapterItem {
+func toOpenChapters(code, siteCode string, chs []adminv1.ComicChapterItem) []v1.ComicChapterItem {
 	out := make([]v1.ComicChapterItem, 0, len(chs))
 	for _, ch := range chs {
 		pages := make([]v1.ComicPageItem, 0, len(ch.Pages))
 		for _, p := range ch.Pages {
-			pages = append(pages, v1.ComicPageItem{Filename: p.Filename, Key: p.Key, Url: p.Url})
+			url := p.Url
+			if u := playsign.WrapPage(code, p.Key, siteCode); u != "" {
+				url = u
+			}
+			pages = append(pages, v1.ComicPageItem{Filename: p.Filename, Key: p.Key, Url: url})
 		}
 		out = append(out, v1.ComicChapterItem{
 			Seq: ch.Seq, Title: ch.Title, PageCount: ch.PageCount, Pages: pages,
