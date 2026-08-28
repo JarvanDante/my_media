@@ -44,7 +44,7 @@ func (s *sAsset) List(ctx context.Context, f domain.ListFilter) ([]domain.Asset,
 
 func (s *sAsset) Create(ctx context.Context, title, coverUrl, remark string, kind int) (string, error) {
 	if !consts.IsHLSKind(kind) {
-		return "", gerror.NewCode(errcode.CodeBadRequest, "创建只支持视频或动漫，漫画请用 zip 导入")
+		return "", gerror.NewCode(errcode.CodeBadRequest, "创建只支持视频、抖音或动漫，漫画请用 zip 导入")
 	}
 	return s.repo.Create(ctx, title, coverUrl, remark, kind)
 }
@@ -119,6 +119,8 @@ func objectPrefixesForAsset(a *domain.Asset) []string {
 		add("media/hls/" + a.Code)
 		add(consts.PrefixCartoon + "source/" + a.Code)
 		add(consts.PrefixCartoon + "hls/" + a.Code)
+		add(consts.PrefixVideo + "source/" + a.Code)
+		add(consts.PrefixVideo + "hls/" + a.Code)
 		add(consts.PrefixComics + a.Code)
 	}
 	// 兼容早期用数字主键拼路径：media/hls/4/index.m3u8

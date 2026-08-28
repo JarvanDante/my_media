@@ -164,7 +164,8 @@ func isHlsCover(raw, code string) bool {
 		return false
 	}
 	return strings.Contains(raw, "/media/hls/"+code+"/") ||
-		strings.Contains(raw, "/cartoon/hls/"+code+"/")
+		strings.Contains(raw, "/cartoon/hls/"+code+"/") ||
+		strings.Contains(raw, "/video/hls/"+code+"/")
 }
 
 func isPrivateMediaCover(raw, code string) bool {
@@ -176,7 +177,8 @@ func isPrivateMediaCover(raw, code string) bool {
 	}
 	return strings.Contains(raw, "/comics/"+code+"/") ||
 		strings.Contains(raw, "/my-media/comics/") ||
-		strings.Contains(raw, "/my-media/cartoon/")
+		strings.Contains(raw, "/my-media/cartoon/") ||
+		strings.Contains(raw, "/my-media/video/")
 }
 
 // Enabled 网关是否已配置。

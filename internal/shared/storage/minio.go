@@ -171,7 +171,7 @@ func (m *Minio) RemoveObject(ctx context.Context, bucket, key string) error {
 	return err
 }
 
-// RemovePrefix 删除前缀下全部对象（视频 media/source/{code}/、media/hls/{code}/；漫画 comics/{code}/）。
+// RemovePrefix 删除前缀下全部对象（视频 media/、抖音 video/、动漫 cartoon/、漫画 comics/）。
 // 注意：minio-go 的 RemoveObjects 只回传失败，成功不会进 channel；计数需用 RemoveObjectsWithResult。
 func (m *Minio) RemovePrefix(ctx context.Context, bucket, prefix string) (int, error) {
 	if bucket == "" {
