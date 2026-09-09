@@ -256,6 +256,78 @@ func TestFinalizeChapterTitle(t *testing.T) {
 	}
 }
 
+func TestChapterSeqEpisodeOrder(t *testing.T) {
+	cases := map[string]int{
+		"郑主任为何这样第1集": 1,
+		"郑主任为何这样第2集": 2,
+		"郑主任为何这样第10集": 10,
+		"漫画名第1话":      1,
+		"漫画名第10话":     10,
+		"第一话":         1,
+		"第十集":         10,
+		"第二十一回":       21,
+		"001_漫画名":     1,
+		"010_漫画名":     10,
+		"EP12":        12,
+		"chapter-3":   3,
+		"漫画名 12":      12,
+	}
+	for in, want := range cases {
+		if got := chapterSeq(in); got != want {
+			t.Fatalf("%s => %d, want %d", in, got, want)
+		}
+	}
+}
+
+func TestParseComicsZip_JiFoldersNaturalOrder(t *testing.T) {
+	dir := t.TempDir()
+	zipPath := filepath.Join(dir, "pack.zip")
+	f, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	add := func(name, body string) {
+		t.Helper()
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("郑主任为何这样/cover.jpg", "cover")
+	add("郑主任为何这样/郑主任为何这样第10集/page_001.jpg", "p10")
+	add("郑主任为何这样/郑主任为何这样第1集/page_001.jpg", "p1")
+	add("郑主任为何这样/郑主任为何这样第2集/page_001.jpg", "p2")
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	zr, err := zip.OpenReader(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	list, err := parseComicsZip(&zr.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || len(list[0].Chapters) != 3 {
+		t.Fatalf("got %+v", list)
+	}
+	want := []int{1, 2, 10}
+	for i, seq := range want {
+		if list[0].Chapters[i].Seq != seq {
+			t.Fatalf("ch%d seq=%d want=%d title=%q", i+1, list[0].Chapters[i].Seq, seq, list[0].Chapters[i].Title)
+		}
+	}
+}
+
 func TestSkipExistingChapterSeqs(t *testing.T) {
 	incoming := []parsedChapter{
 		{Seq: 1, Title: "第1话"},
@@ -284,5 +356,13 @@ func TestSkipExistingChapterSeqs(t *testing.T) {
 	})
 	if skipped != 3 || len(keep) != 0 {
 		t.Fatalf("all skip keep=%d skipped=%d", len(keep), skipped)
+	}
+
+	keep, skipped = skipExistingChapterSeqs(incoming, []domain.ComicChapter{
+		{Seq: 9, Title: "郑主任为何这样第1集"},
+		{Seq: 8, Title: "郑主任为何这样第2集"},
+	})
+	if skipped != 2 || len(keep) != 1 || keep[0].Seq != 3 {
+		t.Fatalf("title seq skip keep=%+v skipped=%d", keep, skipped)
 	}
 }

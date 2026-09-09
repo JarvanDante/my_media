@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 
 	"github.com/gogf/gf/v2/errors/gerror"
 
@@ -72,7 +73,7 @@ func (s *sAsset) importOneManga(ctx context.Context, manga parsedManga, resume b
 func skipExistingChapterSeqs(chapters []parsedChapter, exist []domain.ComicChapter) (keep []parsedChapter, skipped int) {
 	have := make(map[int]struct{}, len(exist))
 	for _, ch := range exist {
-		have[ch.Seq] = struct{}{}
+		have[effectiveChapterSeq(ch.Seq, ch.Title)] = struct{}{}
 	}
 	for _, ch := range chapters {
 		if _, ok := have[ch.Seq]; ok {
@@ -230,10 +231,23 @@ func (s *sAsset) ComicChapters(ctx context.Context, code string) ([]v1.ComicChap
 				Url: s.signObject(ctx, a.SourceBucket, p.Key),
 			})
 		}
+		sort.SliceStable(pages, func(i, j int) bool {
+			si, sj := pageSeq(pages[i].Filename), pageSeq(pages[j].Filename)
+			if si != sj {
+				return si < sj
+			}
+			return naturalLess(pages[i].Filename, pages[j].Filename)
+		})
 		out = append(out, v1.ComicChapterItem{
-			Seq: ch.Seq, Title: ch.Title, PageCount: ch.PageCount, Pages: pages,
+			Seq: effectiveChapterSeq(ch.Seq, ch.Title), Title: ch.Title, PageCount: ch.PageCount, Pages: pages,
 		})
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Seq != out[j].Seq {
+			return out[i].Seq < out[j].Seq
+		}
+		return naturalLess(out[i].Title, out[j].Title)
+	})
 	return out, nil
 }
 

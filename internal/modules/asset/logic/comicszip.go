@@ -12,14 +12,21 @@ import (
 )
 
 var (
-	reLeadingNum = regexp.MustCompile(`^(\d+)`)
-	reHua        = regexp.MustCompile(`第\s*(\d+)\s*话`)
-	reAnyHua     = regexp.MustCompile(`^第.+话$`)
-	rePageNum    = regexp.MustCompile(`(?i)page[_\-]?(\d+)`)
-	imageExt     = map[string]bool{
+	reLeadingNum  = regexp.MustCompile(`^(\d+)`)
+	reHua         = regexp.MustCompile(`第\s*(\d+)\s*[话集章回話]`)
+	reCNHua       = regexp.MustCompile(`第\s*([零〇一二三四五六七八九十百两兩]+)\s*[话集章回話]`)
+	reAnyHua      = regexp.MustCompile(`^第.+[话集章回話]$`)
+	reEpMark      = regexp.MustCompile(`(?i)(?:ep|episode|ch|chapter)[_\-\s.]*(\d+)`)
+	reTrailingNum = regexp.MustCompile(`(\d+)\s*$`)
+	rePageNum     = regexp.MustCompile(`(?i)page[_\-]?(\d+)`)
+	imageExt      = map[string]bool{
 		".jpg": true, ".jpeg": true, ".png": true, ".webp": true, ".gif": true,
 	}
 	coverNames = map[string]bool{"cover": true, "folder": true, "thumb": true}
+	cnDigit    = map[rune]int{
+		'零': 0, '〇': 0, '一': 1, '二': 2, '两': 2, '兩': 2,
+		'三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9,
+	}
 )
 
 type zipEntry struct {
@@ -205,7 +212,7 @@ func collectChapterDirs(prefix string, entries []zipEntry) []string {
 		if strings.EqualFold(d, "chapters") {
 			continue
 		}
-		if reHua.MatchString(d) {
+		if isEpisodeFolder(d) {
 			hua = append(hua, d)
 		} else {
 			other = append(other, d)
@@ -246,7 +253,7 @@ func subdirsWithImages(prefix string, entries []zipEntry) []string {
 		if si != sj {
 			return si < sj
 		}
-		return out[i] < out[j]
+		return naturalLess(out[i], out[j])
 	})
 	return out
 }
@@ -318,8 +325,21 @@ func parseOneManga(prefix string, entries []zipEntry) (parsedManga, error) {
 	if len(m.Chapters) == 0 {
 		return m, errZip("「" + m.Title + "」章节里没有图片")
 	}
-	sort.Slice(m.Chapters, func(i, j int) bool { return m.Chapters[i].Seq < m.Chapters[j].Seq })
+	sortChaptersBySeq(m.Chapters)
 	return m, nil
+}
+
+func sortChaptersBySeq(chs []parsedChapter) {
+	sort.SliceStable(chs, func(i, j int) bool {
+		si, sj := effectiveChapterSeq(chs[i].Seq, chs[i].Title), effectiveChapterSeq(chs[j].Seq, chs[j].Title)
+		if si != sj {
+			return si < sj
+		}
+		if chs[i].Seq != chs[j].Seq {
+			return chs[i].Seq < chs[j].Seq
+		}
+		return naturalLess(chs[i].Title, chs[j].Title)
+	})
 }
 
 func pagesInDir(dir string, entries []zipEntry) []parsedPage {
@@ -536,17 +556,118 @@ func pageSeq(name string) int {
 	return chapterSeq(name)
 }
 
-func chapterSeq(name string) int {
-	base := strings.TrimSuffix(name, path.Ext(name))
-	if m := reHua.FindStringSubmatch(base); len(m) == 2 {
-		n, _ := strconv.Atoi(m[1])
+func isEpisodeFolder(name string) bool {
+	return chapterSeq(name) > 0 || reAnyHua.MatchString(name) || reCNHua.MatchString(name)
+}
+
+func effectiveChapterSeq(seq int, title string) int {
+	if n := chapterSeq(title); n > 0 {
 		return n
+	}
+	return seq
+}
+
+func chapterSeq(name string) int {
+	base := strings.TrimSuffix(path.Base(name), path.Ext(name))
+	if m := reHua.FindStringSubmatch(base); len(m) == 2 {
+		if n, err := strconv.Atoi(m[1]); err == nil && n > 0 {
+			return n
+		}
+	}
+	if m := reCNHua.FindStringSubmatch(base); len(m) == 2 {
+		if n := parseCNInt(m[1]); n > 0 {
+			return n
+		}
+	}
+	if m := reEpMark.FindStringSubmatch(base); len(m) == 2 {
+		if n, err := strconv.Atoi(m[1]); err == nil && n > 0 {
+			return n
+		}
 	}
 	if m := reLeadingNum.FindStringSubmatch(base); len(m) == 2 {
-		n, _ := strconv.Atoi(m[1])
-		return n
+		if n, err := strconv.Atoi(m[1]); err == nil && n > 0 {
+			return n
+		}
+	}
+	if m := reTrailingNum.FindStringSubmatch(base); len(m) == 2 {
+		if n, err := strconv.Atoi(m[1]); err == nil && n > 0 {
+			return n
+		}
 	}
 	return 0
+}
+
+func parseCNInt(s string) int {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "零" || s == "〇" {
+		return 0
+	}
+	if s == "十" {
+		return 10
+	}
+	rs := []rune(s)
+	if rs[0] == '十' {
+		if len(rs) == 2 {
+			if d, ok := cnDigit[rs[1]]; ok && d > 0 {
+				return 10 + d
+			}
+		}
+		return 0
+	}
+	if len(rs) >= 2 && rs[1] == '十' {
+		tens, ok := cnDigit[rs[0]]
+		if !ok || tens < 1 {
+			return 0
+		}
+		if len(rs) == 2 {
+			return tens * 10
+		}
+		if len(rs) == 3 {
+			if d, ok := cnDigit[rs[2]]; ok {
+				return tens*10 + d
+			}
+		}
+		return 0
+	}
+	if len(rs) == 1 {
+		if d, ok := cnDigit[rs[0]]; ok && d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
+func naturalLess(a, b string) bool {
+	ia, ib := 0, 0
+	ra, rb := []rune(a), []rune(b)
+	for ia < len(ra) && ib < len(rb) {
+		if isASCIIDigit(ra[ia]) && isASCIIDigit(rb[ib]) {
+			va, ja := readASCIINum(ra, ia)
+			vb, jb := readASCIINum(rb, ib)
+			if va != vb {
+				return va < vb
+			}
+			ia, ib = ja, jb
+			continue
+		}
+		if ra[ia] != rb[ib] {
+			return ra[ia] < rb[ib]
+		}
+		ia++
+		ib++
+	}
+	return len(ra) < len(rb)
+}
+
+func isASCIIDigit(r rune) bool { return r >= '0' && r <= '9' }
+
+func readASCIINum(rs []rune, i int) (int, int) {
+	n := 0
+	for i < len(rs) && isASCIIDigit(rs[i]) {
+		n = n*10 + int(rs[i]-'0')
+		i++
+	}
+	return n, i
 }
 
 func displayName(p string) string {
