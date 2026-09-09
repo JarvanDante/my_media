@@ -123,6 +123,14 @@ func (c *Admin) Delete(ctx context.Context, req *v1.DeleteReq) (res *v1.DeleteRe
 	return &v1.DeleteRes{DeletedObjects: n}, nil
 }
 
+func (c *Admin) DeleteChapter(ctx context.Context, req *v1.DeleteChapterReq) (res *v1.DeleteChapterRes, err error) {
+	n, count, err := c.svc.DeleteChapter(ctx, req.Id, req.Seq)
+	if err != nil {
+		return nil, err
+	}
+	return &v1.DeleteChapterRes{DeletedObjects: n, ChapterCount: count}, nil
+}
+
 const maxComicsZip = 2 << 30
 
 func (c *Admin) ImportComics(ctx context.Context, req *v1.ImportComicsReq) (res *v1.ImportComicsRes, err error) {

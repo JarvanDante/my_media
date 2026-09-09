@@ -101,6 +101,17 @@ type DeleteRes struct {
 	DeletedObjects int `json:"deleted_objects"`
 }
 
+type DeleteChapterReq struct {
+	g.Meta `path:"/admin/assets/{id}/chapters/{seq}" method:"delete" tags:"Admin/Asset" summary:"删除漫画单集并清理页图"`
+	Id     string `json:"id" in:"path" v:"required|length:8,16"`
+	Seq    int    `json:"seq" in:"path" v:"required|min:1"`
+}
+
+type DeleteChapterRes struct {
+	DeletedObjects int `json:"deleted_objects"`
+	ChapterCount   int `json:"chapter_count"`
+}
+
 type ComicPageItem struct {
 	Filename string `json:"filename"`
 	Key      string `json:"key"`

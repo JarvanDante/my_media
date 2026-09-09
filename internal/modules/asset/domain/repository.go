@@ -83,6 +83,7 @@ type Repository interface {
 	ReplaceComicChapters(ctx context.Context, assetID int64, chapters []ComicChapter) error
 	AppendComicChapters(ctx context.Context, assetID int64, chapters []ComicChapter) error
 	ListComicChapters(ctx context.Context, assetID int64) ([]ComicChapter, error)
+	DeleteComicChapter(ctx context.Context, assetID int64, seq int) error
 	GetByCode(ctx context.Context, code string) (*Asset, error)
 	Delete(ctx context.Context, pk int64) error
 	Pick(ctx context.Context, appKey, siteCode, code string) (*Asset, error)

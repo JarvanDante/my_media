@@ -328,6 +328,22 @@ func TestParseComicsZip_JiFoldersNaturalOrder(t *testing.T) {
 	}
 }
 
+func TestFindComicChapter(t *testing.T) {
+	chs := []domain.ComicChapter{
+		{Seq: 9, Title: "郑主任为何这样第1集"},
+		{Seq: 2, Title: "第二话"},
+	}
+	if got := findComicChapter(chs, 2); got == nil || got.Seq != 2 {
+		t.Fatalf("by stored seq: %+v", got)
+	}
+	if got := findComicChapter(chs, 1); got == nil || got.Seq != 9 {
+		t.Fatalf("by title seq: %+v", got)
+	}
+	if got := findComicChapter(chs, 99); got != nil {
+		t.Fatalf("missing should be nil: %+v", got)
+	}
+}
+
 func TestSkipExistingChapterSeqs(t *testing.T) {
 	incoming := []parsedChapter{
 		{Seq: 1, Title: "第1话"},

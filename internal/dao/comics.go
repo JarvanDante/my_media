@@ -140,6 +140,15 @@ func (r *assetRepo) AppendComicChapters(ctx context.Context, assetID int64, chap
 	})
 }
 
+func (r *assetRepo) DeleteComicChapter(ctx context.Context, assetID int64, seq int) error {
+	if assetID <= 0 || seq <= 0 {
+		return errors.New("invalid chapter")
+	}
+	_, err := g.DB().Model("media_comic_chapter").Ctx(ctx).
+		Where("asset_id", assetID).Where("seq", seq).Delete()
+	return err
+}
+
 func (r *assetRepo) ListComicChapters(ctx context.Context, assetID int64) ([]domain.ComicChapter, error) {
 	rows, err := g.DB().Model("media_comic_chapter").Ctx(ctx).
 		Where("asset_id", assetID).OrderAsc("seq").All()

@@ -22,6 +22,7 @@ type Asset interface {
 	HandleTranscodeResult(ctx context.Context, msg transcode.ResultMessage) error
 	ImportComics(ctx context.Context, zipPath string, resume bool) (*v1.ImportComicsRes, error)
 	ComicChapters(ctx context.Context, code string) ([]v1.ComicChapterItem, error)
+	DeleteChapter(ctx context.Context, code string, seq int) (deletedObjects int, chapterCount int, err error)
 
 	ListPicks(ctx context.Context, appKey string, page, size int) (list []domain.PickRecord, total int, err error)
 	PickedSet(ctx context.Context, appKey string, codes []string) (map[string]bool, error)

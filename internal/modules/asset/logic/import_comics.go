@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 
 	"github.com/gogf/gf/v2/errors/gerror"
 
@@ -249,6 +250,92 @@ func (s *sAsset) ComicChapters(ctx context.Context, code string) ([]v1.ComicChap
 		return naturalLess(out[i].Title, out[j].Title)
 	})
 	return out, nil
+}
+
+func findComicChapter(chs []domain.ComicChapter, seq int) *domain.ComicChapter {
+	if seq <= 0 {
+		return nil
+	}
+	for i := range chs {
+		if chs[i].Seq == seq {
+			return &chs[i]
+		}
+	}
+	for i := range chs {
+		if effectiveChapterSeq(chs[i].Seq, chs[i].Title) == seq {
+			return &chs[i]
+		}
+	}
+	return nil
+}
+
+func (s *sAsset) DeleteChapter(ctx context.Context, code string, seq int) (int, int, error) {
+	a, err := s.repo.GetByCode(ctx, code)
+	if err != nil {
+		return 0, 0, err
+	}
+	if a == nil {
+		return 0, 0, gerror.NewCode(errcode.CodeNotFound, "资产不存在")
+	}
+	if a.Kind != consts.KindComics {
+		return 0, 0, gerror.NewCode(errcode.CodeBadRequest, "该资产不是漫画")
+	}
+	if s.store == nil {
+		return 0, 0, gerror.NewCode(errcode.CodeBadRequest, "MinIO 未初始化，拒绝删除以免残留对象")
+	}
+	chs, err := s.repo.ListComicChapters(ctx, a.Pk)
+	if err != nil {
+		return 0, 0, err
+	}
+	ch := findComicChapter(chs, seq)
+	if ch == nil {
+		return 0, 0, gerror.NewCode(errcode.CodeNotFound, "章节不存在")
+	}
+
+	bucket := a.SourceBucket
+	if bucket == "" {
+		bucket = s.store.Bucket()
+	}
+	deleted := 0
+	seen := map[string]struct{}{}
+	removeKey := func(key string) error {
+		key = strings.TrimLeft(key, "/")
+		if key == "" {
+			return nil
+		}
+		if _, ok := seen[key]; ok {
+			return nil
+		}
+		seen[key] = struct{}{}
+		if err := s.store.RemoveObject(ctx, bucket, key); err != nil {
+			return err
+		}
+		deleted++
+		return nil
+	}
+	for _, p := range ch.Pages {
+		if err := removeKey(p.Key); err != nil {
+			return deleted, len(chs), gerror.Wrapf(err, "清理页图失败(%s)", p.Key)
+		}
+	}
+	prefix := fmt.Sprintf("%s%s/ch%03d/", consts.PrefixComics, a.Code, ch.Seq)
+	n, remErr := s.store.RemovePrefix(ctx, bucket, prefix)
+	if remErr != nil {
+		return deleted, len(chs), gerror.Wrapf(remErr, "清理章节目录失败(%s)", prefix)
+	}
+	deleted += n
+
+	if err := s.repo.DeleteComicChapter(ctx, a.Pk, ch.Seq); err != nil {
+		return deleted, len(chs), gerror.Wrap(err, "对象已清理但删除章节记录失败，请重试")
+	}
+	remain := len(chs) - 1
+	if remain < 0 {
+		remain = 0
+	}
+	if err := s.repo.UpdateComicsChapterCount(ctx, a.Pk, remain); err != nil {
+		return deleted, remain, gerror.Wrap(err, "章节已删但更新章数失败")
+	}
+	return deleted, remain, nil
 }
 
 func (s *sAsset) decorateCover(ctx context.Context, a *domain.Asset) {
