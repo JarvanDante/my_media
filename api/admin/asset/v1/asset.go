@@ -116,6 +116,7 @@ type ComicChapterItem struct {
 
 type ImportComicsReq struct {
 	g.Meta `path:"/admin/comics/import" method:"post" mime:"multipart/form-data" tags:"Admin/Asset" summary:"漫画 zip 批量入库"`
+	Resume bool `json:"resume" p:"resume" dc:"续载：同名漫画追加新话，已有话数跳过"`
 }
 
 type ImportComicsItem struct {
@@ -124,6 +125,8 @@ type ImportComicsItem struct {
 	Category     string `json:"category"`
 	ChapterCount int    `json:"chapter_count"`
 	PageCount    int    `json:"page_count"`
+	Appended     bool   `json:"appended"`
+	SkippedCount int    `json:"skipped_count"`
 }
 
 type ImportComicsFail struct {

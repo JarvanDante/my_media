@@ -20,7 +20,7 @@ type Asset interface {
 	TriggerTranscode(ctx context.Context, code string, coverSeekSec int) (jobID string, err error)
 	ReplaceCover(ctx context.Context, code, filename string, body io.Reader, size int64) error
 	HandleTranscodeResult(ctx context.Context, msg transcode.ResultMessage) error
-	ImportComics(ctx context.Context, zipPath string) (*v1.ImportComicsRes, error)
+	ImportComics(ctx context.Context, zipPath string, resume bool) (*v1.ImportComicsRes, error)
 	ComicChapters(ctx context.Context, code string) ([]v1.ComicChapterItem, error)
 
 	ListPicks(ctx context.Context, appKey string, page, size int) (list []domain.PickRecord, total int, err error)

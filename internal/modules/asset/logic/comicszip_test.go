@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/JarvanDante/my_media/internal/modules/asset/domain"
 )
 
 func TestParseComicsZip_ChaptersLayout(t *testing.T) {
@@ -251,5 +253,36 @@ func TestFinalizeChapterTitle(t *testing.T) {
 	got = finalizeChapterTitle("第一话", "测试漫画", "开端", 1)
 	if got != "开端" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestSkipExistingChapterSeqs(t *testing.T) {
+	incoming := []parsedChapter{
+		{Seq: 1, Title: "第1话"},
+		{Seq: 2, Title: "第2话"},
+		{Seq: 3, Title: "第3话"},
+	}
+	exist := []domain.ComicChapter{
+		{Seq: 1, Title: "第1话"},
+		{Seq: 2, Title: "第2话"},
+	}
+	keep, skipped := skipExistingChapterSeqs(incoming, exist)
+	if skipped != 2 {
+		t.Fatalf("skipped=%d", skipped)
+	}
+	if len(keep) != 1 || keep[0].Seq != 3 {
+		t.Fatalf("keep=%+v", keep)
+	}
+
+	keep, skipped = skipExistingChapterSeqs(incoming, exist[:0])
+	if skipped != 0 || len(keep) != 3 {
+		t.Fatalf("empty exist keep=%d skipped=%d", len(keep), skipped)
+	}
+
+	keep, skipped = skipExistingChapterSeqs(incoming, []domain.ComicChapter{
+		{Seq: 1}, {Seq: 2}, {Seq: 3},
+	})
+	if skipped != 3 || len(keep) != 0 {
+		t.Fatalf("all skip keep=%d skipped=%d", len(keep), skipped)
 	}
 }

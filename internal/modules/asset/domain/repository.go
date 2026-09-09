@@ -77,8 +77,11 @@ type Repository interface {
 	List(ctx context.Context, f ListFilter) (list []Asset, total int, err error)
 	Create(ctx context.Context, title, coverUrl, remark string, kind int) (code string, err error)
 	CreateComics(ctx context.Context, in ComicsCreateInput) (pk int64, code string, err error)
+	FindComicsByTitle(ctx context.Context, title string) (*Asset, error)
 	UpdateComicsReady(ctx context.Context, pk int64, bucket, coverKey, coverURL string, chapterCount int) error
+	UpdateComicsChapterCount(ctx context.Context, pk int64, chapterCount int) error
 	ReplaceComicChapters(ctx context.Context, assetID int64, chapters []ComicChapter) error
+	AppendComicChapters(ctx context.Context, assetID int64, chapters []ComicChapter) error
 	ListComicChapters(ctx context.Context, assetID int64) ([]ComicChapter, error)
 	GetByCode(ctx context.Context, code string) (*Asset, error)
 	Delete(ctx context.Context, pk int64) error

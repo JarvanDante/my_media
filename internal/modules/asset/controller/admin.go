@@ -125,7 +125,7 @@ func (c *Admin) Delete(ctx context.Context, req *v1.DeleteReq) (res *v1.DeleteRe
 
 const maxComicsZip = 2 << 30
 
-func (c *Admin) ImportComics(ctx context.Context, _ *v1.ImportComicsReq) (res *v1.ImportComicsRes, err error) {
+func (c *Admin) ImportComics(ctx context.Context, req *v1.ImportComicsReq) (res *v1.ImportComicsRes, err error) {
 	r := ghttp.RequestFromCtx(ctx)
 	up := r.GetUploadFile("file")
 	if up == nil {
@@ -146,7 +146,8 @@ func (c *Admin) ImportComics(ctx context.Context, _ *v1.ImportComicsReq) (res *v
 	if err != nil {
 		return nil, err
 	}
-	return c.svc.ImportComics(ctx, filepath.Join(dir, saved))
+	resume := req.Resume || r.Get("resume").Bool()
+	return c.svc.ImportComics(ctx, filepath.Join(dir, saved), resume)
 }
 
 func toAdminItem(a domain.Asset) v1.AssetItem {

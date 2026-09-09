@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/gogf/gf/v2/database/gdb"
 	"github.com/gogf/gf/v2/frame/g"
@@ -48,6 +49,26 @@ func (r *assetRepo) CreateComics(ctx context.Context, in domain.ComicsCreateInpu
 	return 0, "", errors.New("生成资产短码失败, 请重试")
 }
 
+func (r *assetRepo) FindComicsByTitle(ctx context.Context, title string) (*domain.Asset, error) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return nil, nil
+	}
+	row, err := g.DB().Model("media_asset").Ctx(ctx).
+		Where("kind", consts.KindComics).
+		Where("title", title).
+		OrderAsc("id").
+		One()
+	if err != nil {
+		return nil, err
+	}
+	if row.IsEmpty() {
+		return nil, nil
+	}
+	a := mapAsset(row.Map())
+	return &a, nil
+}
+
 func (r *assetRepo) UpdateComicsReady(ctx context.Context, pk int64, bucket, coverKey, coverURL string, chapterCount int) error {
 	_, err := g.DB().Model("media_asset").Ctx(ctx).Where("id", pk).Data(g.Map{
 		"source_bucket": bucket,
@@ -60,11 +81,45 @@ func (r *assetRepo) UpdateComicsReady(ctx context.Context, pk int64, bucket, cov
 	return err
 }
 
+func (r *assetRepo) UpdateComicsChapterCount(ctx context.Context, pk int64, chapterCount int) error {
+	_, err := g.DB().Model("media_asset").Ctx(ctx).Where("id", pk).Data(g.Map{
+		"chapter_count": chapterCount,
+		"status":        consts.AssetStatusReady,
+		"updated_at":    gtime.Now(),
+	}).Update()
+	return err
+}
+
 func (r *assetRepo) ReplaceComicChapters(ctx context.Context, assetID int64, chapters []domain.ComicChapter) error {
 	return g.DB().Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
 		if _, err := tx.Model("media_comic_chapter").Ctx(ctx).Where("asset_id", assetID).Delete(); err != nil {
 			return err
 		}
+		for _, ch := range chapters {
+			pages, _ := json.Marshal(ch.Pages)
+			if pages == nil {
+				pages = []byte("[]")
+			}
+			if _, err := tx.Model("media_comic_chapter").Ctx(ctx).Data(g.Map{
+				"asset_id":   assetID,
+				"seq":        ch.Seq,
+				"title":      ch.Title,
+				"page_count": ch.PageCount,
+				"pages":      string(pages),
+				"created_at": gtime.Now(),
+			}).Insert(); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (r *assetRepo) AppendComicChapters(ctx context.Context, assetID int64, chapters []domain.ComicChapter) error {
+	if len(chapters) == 0 {
+		return nil
+	}
+	return g.DB().Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
 		for _, ch := range chapters {
 			pages, _ := json.Marshal(ch.Pages)
 			if pages == nil {
