@@ -3,7 +3,9 @@ package logic
 import (
 	"archive/zip"
 	"context"
+	"fmt"
 	"sort"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/gogf/gf/v2/errors/gerror"
@@ -236,5 +238,97 @@ func (s *sAsset) deleteNovelChapter(ctx context.Context, a *domain.Asset, seq in
 		return 0, len(remain), gerror.Wrap(err, "章节已删但更新章数失败")
 	}
 	return 0, len(remain), nil
+}
+
+func (s *sAsset) novelAsset(ctx context.Context, code string) (*domain.Asset, error) {
+	a, err := s.repo.GetByCode(ctx, code)
+	if err != nil {
+		return nil, err
+	}
+	if a == nil {
+		return nil, gerror.NewCode(errcode.CodeNotFound, "资产不存在")
+	}
+	if a.Kind != consts.KindNovel {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, "该资产不是小说")
+	}
+	return a, nil
+}
+
+func nextNovelSeq(chs []domain.NovelChapter) int {
+	next := 1
+	for _, ch := range chs {
+		if ch.Seq >= next {
+			next = ch.Seq + 1
+		}
+	}
+	return next
+}
+
+func (s *sAsset) CreateNovelChapter(ctx context.Context, code string, seq int, title, content string) (int, int, int, error) {
+	a, err := s.novelAsset(ctx, code)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	chs, err := s.repo.ListNovelChapters(ctx, a.Pk)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	if seq <= 0 {
+		seq = nextNovelSeq(chs)
+	}
+	if findNovelChapter(chs, seq) != nil {
+		return 0, 0, 0, gerror.NewCode(errcode.CodeBadRequest, "章序已存在")
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		title = fmt.Sprintf("第%d章", seq)
+	}
+	wc := utf8.RuneCountInString(content)
+	ch := domain.NovelChapter{Seq: seq, Title: title, Content: content, WordCount: wc}
+	if err := s.repo.AppendNovelChapters(ctx, a.Pk, []domain.NovelChapter{ch}); err != nil {
+		return 0, 0, 0, gerror.Wrap(err, "新增章节失败")
+	}
+	remain := append(append([]domain.NovelChapter{}, chs...), ch)
+	if err := s.repo.UpdateNovelStats(ctx, a.Pk, len(remain), sumNovelWords(remain)); err != nil {
+		return seq, wc, len(remain), gerror.Wrap(err, "章节已写入但更新统计失败")
+	}
+	return seq, wc, len(remain), nil
+}
+
+func (s *sAsset) UpdateNovelChapter(ctx context.Context, code string, seq int, title, content string) (int, int, error) {
+	a, err := s.novelAsset(ctx, code)
+	if err != nil {
+		return 0, 0, err
+	}
+	chs, err := s.repo.ListNovelChapters(ctx, a.Pk)
+	if err != nil {
+		return 0, 0, err
+	}
+	exist := findNovelChapter(chs, seq)
+	if exist == nil {
+		return 0, 0, gerror.NewCode(errcode.CodeNotFound, "章节不存在")
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		title = exist.Title
+	}
+	wc := utf8.RuneCountInString(content)
+	if err := s.repo.UpdateNovelChapter(ctx, a.Pk, domain.NovelChapter{
+		Seq: seq, Title: title, Content: content, WordCount: wc,
+	}); err != nil {
+		return 0, 0, gerror.Wrap(err, "保存章节失败")
+	}
+	for i := range chs {
+		if chs[i].Seq == seq {
+			chs[i].Title = title
+			chs[i].Content = content
+			chs[i].WordCount = wc
+			break
+		}
+	}
+	if err := s.repo.UpdateNovelStats(ctx, a.Pk, len(chs), sumNovelWords(chs)); err != nil {
+		return wc, len(chs), gerror.Wrap(err, "章节已保存但更新统计失败")
+	}
+	return wc, len(chs), nil
 }
 

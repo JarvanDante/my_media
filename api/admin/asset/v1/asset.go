@@ -113,6 +113,34 @@ type DeleteChapterRes struct {
 	ChapterCount   int `json:"chapter_count"`
 }
 
+type CreateNovelChapterReq struct {
+	g.Meta  `path:"/admin/assets/{id}/novel-chapters" method:"post" tags:"Admin/Asset" summary:"新增小说章节"`
+	Id      string `json:"id" in:"path" v:"required|length:8,16"`
+	Seq     int    `json:"seq"`
+	Title   string `json:"title"`
+	Content string `json:"content"`
+}
+
+type CreateNovelChapterRes struct {
+	Seq          int `json:"seq"`
+	WordCount    int `json:"word_count"`
+	ChapterCount int `json:"chapter_count"`
+}
+
+type UpdateNovelChapterReq struct {
+	g.Meta  `path:"/admin/assets/{id}/novel-chapters/{seq}" method:"put" tags:"Admin/Asset" summary:"编辑小说章节"`
+	Id      string `json:"id" in:"path" v:"required|length:8,16"`
+	Seq     int    `json:"seq" in:"path" v:"required|min:1"`
+	Title   string `json:"title"`
+	Content string `json:"content"`
+}
+
+type UpdateNovelChapterRes struct {
+	Seq          int `json:"seq"`
+	WordCount    int `json:"word_count"`
+	ChapterCount int `json:"chapter_count"`
+}
+
 type ComicPageItem struct {
 	Filename string `json:"filename"`
 	Key      string `json:"key"`

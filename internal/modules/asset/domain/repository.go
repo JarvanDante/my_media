@@ -106,6 +106,7 @@ type Repository interface {
 	UpdateNovelStats(ctx context.Context, pk int64, chapterCount, wordCount int) error
 	ReplaceNovelChapters(ctx context.Context, assetID int64, chapters []NovelChapter) error
 	AppendNovelChapters(ctx context.Context, assetID int64, chapters []NovelChapter) error
+	UpdateNovelChapter(ctx context.Context, assetID int64, ch NovelChapter) error
 	ListNovelChapters(ctx context.Context, assetID int64) ([]NovelChapter, error)
 	DeleteNovelChapter(ctx context.Context, assetID int64, seq int) error
 	GetByCode(ctx context.Context, code string) (*Asset, error)

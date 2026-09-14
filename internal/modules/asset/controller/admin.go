@@ -138,6 +138,22 @@ func (c *Admin) DeleteChapter(ctx context.Context, req *v1.DeleteChapterReq) (re
 	return &v1.DeleteChapterRes{DeletedObjects: n, ChapterCount: count}, nil
 }
 
+func (c *Admin) CreateNovelChapter(ctx context.Context, req *v1.CreateNovelChapterReq) (res *v1.CreateNovelChapterRes, err error) {
+	seq, wc, count, err := c.svc.CreateNovelChapter(ctx, req.Id, req.Seq, req.Title, req.Content)
+	if err != nil {
+		return nil, err
+	}
+	return &v1.CreateNovelChapterRes{Seq: seq, WordCount: wc, ChapterCount: count}, nil
+}
+
+func (c *Admin) UpdateNovelChapter(ctx context.Context, req *v1.UpdateNovelChapterReq) (res *v1.UpdateNovelChapterRes, err error) {
+	wc, count, err := c.svc.UpdateNovelChapter(ctx, req.Id, req.Seq, req.Title, req.Content)
+	if err != nil {
+		return nil, err
+	}
+	return &v1.UpdateNovelChapterRes{Seq: req.Seq, WordCount: wc, ChapterCount: count}, nil
+}
+
 const maxComicsZip = 2 << 30
 
 func (c *Admin) ImportComics(ctx context.Context, req *v1.ImportComicsReq) (res *v1.ImportComicsRes, err error) {

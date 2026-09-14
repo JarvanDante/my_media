@@ -10,7 +10,7 @@ import (
 
 func RegisterAdmin(group *ghttp.RouterGroup, svc service.Asset) {
 	ctrl := controller.NewAdmin(svc)
-	group.Bind(ctrl.List, ctrl.Create, ctrl.Detail, ctrl.UploadURL, ctrl.Transcode, ctrl.ReplaceCover, ctrl.Delete, ctrl.DeleteChapter, ctrl.ImportComics, ctrl.ImportNovels)
+	group.Bind(ctrl.List, ctrl.Create, ctrl.Detail, ctrl.UploadURL, ctrl.Transcode, ctrl.ReplaceCover, ctrl.Delete, ctrl.DeleteChapter, ctrl.CreateNovelChapter, ctrl.UpdateNovelChapter, ctrl.ImportComics, ctrl.ImportNovels)
 }
 
 func RegisterOpen(group *ghttp.RouterGroup, svc service.Asset) {

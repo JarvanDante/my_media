@@ -24,6 +24,8 @@ type Asset interface {
 	ImportNovels(ctx context.Context, zipPath string, resume bool) (*v1.ImportNovelsRes, error)
 	ComicChapters(ctx context.Context, code string) ([]v1.ComicChapterItem, error)
 	NovelChapters(ctx context.Context, code string) ([]v1.ComicChapterItem, error)
+	CreateNovelChapter(ctx context.Context, code string, seq int, title, content string) (outSeq, wordCount, chapterCount int, err error)
+	UpdateNovelChapter(ctx context.Context, code string, seq int, title, content string) (wordCount, chapterCount int, err error)
 	DeleteChapter(ctx context.Context, code string, seq int) (deletedObjects int, chapterCount int, err error)
 
 	ListPicks(ctx context.Context, appKey string, page, size int) (list []domain.PickRecord, total int, err error)

@@ -125,6 +125,26 @@ func insertNovelChapters(ctx context.Context, tx gdb.TX, assetID int64, chapters
 	return nil
 }
 
+func (r *assetRepo) UpdateNovelChapter(ctx context.Context, assetID int64, ch domain.NovelChapter) error {
+	if assetID <= 0 || ch.Seq <= 0 {
+		return errors.New("invalid chapter")
+	}
+	res, err := g.DB().Model("media_novel_chapter").Ctx(ctx).
+		Where("asset_id", assetID).Where("seq", ch.Seq).Data(g.Map{
+		"title":      ch.Title,
+		"content":    ch.Content,
+		"word_count": ch.WordCount,
+	}).Update()
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return errors.New("章节不存在")
+	}
+	return nil
+}
+
 func (r *assetRepo) DeleteNovelChapter(ctx context.Context, assetID int64, seq int) error {
 	if assetID <= 0 || seq <= 0 {
 		return errors.New("invalid chapter")
