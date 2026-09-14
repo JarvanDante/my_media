@@ -80,6 +80,13 @@ func (c *Open) Detail(ctx context.Context, req *v1.DetailReq) (res *v1.DetailRes
 		}
 		res.Chapters = toOpenChapters(a.Code, siteCode, chs)
 	}
+	if a.Kind == consts.KindNovel {
+		chs, e := c.svc.NovelChapters(ctx, a.Code)
+		if e != nil {
+			return nil, e
+		}
+		res.Chapters = toOpenChapters(a.Code, siteCode, chs)
+	}
 	return res, nil
 }
 
@@ -105,6 +112,13 @@ func (c *Open) Pick(ctx context.Context, req *v1.PickReq) (res *v1.PickRes, err 
 	}
 	if a.Kind == consts.KindComics {
 		chs, e := c.svc.ComicChapters(ctx, a.Code)
+		if e != nil {
+			return nil, e
+		}
+		res.Chapters = toOpenChapters(a.Code, siteCode, chs)
+	}
+	if a.Kind == consts.KindNovel {
+		chs, e := c.svc.NovelChapters(ctx, a.Code)
 		if e != nil {
 			return nil, e
 		}
@@ -178,7 +192,7 @@ func (c *Open) PlayToken(ctx context.Context, req *v1.PlayTokenReq) (res *v1.Pla
 func toOpenItem(a domain.Asset, picked bool, siteCode string) v1.AssetItem {
 	cover := playsign.WrapCover(a.Code, a.CoverUrl, siteCode)
 	play := a.PlayUrl
-	if a.Kind != consts.KindComics {
+	if a.Kind != consts.KindComics && a.Kind != consts.KindNovel {
 		play = playsign.Wrap(a.Code, a.PlayUrl, siteCode)
 	}
 	return v1.AssetItem{
@@ -201,6 +215,7 @@ func toOpenChapters(code, siteCode string, chs []adminv1.ComicChapterItem) []v1.
 		}
 		out = append(out, v1.ComicChapterItem{
 			Seq: ch.Seq, Title: ch.Title, PageCount: ch.PageCount, Pages: pages,
+			Content: ch.Content, WordCount: ch.WordCount,
 		})
 	}
 	return out

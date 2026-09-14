@@ -21,6 +21,7 @@ type Asset struct {
 	Category        string
 	Intro           string
 	ChapterCount    int
+	WordCount       int
 	CreatedAt       string
 }
 
@@ -29,7 +30,7 @@ type ListFilter struct {
 	Size      int
 	Keyword   string
 	Status    int // -1 全部
-	Kind      int // -1 全部  0视频  1漫画  2动漫
+	Kind      int // -1 全部  0视频  1漫画  2动漫  3抖音  4小说
 	ReadyOnly bool
 }
 
@@ -73,6 +74,21 @@ type ComicsCreateInput struct {
 	Remark   string
 }
 
+type NovelChapter struct {
+	Seq       int
+	Title     string
+	Content   string
+	WordCount int
+}
+
+type NovelCreateInput struct {
+	Title    string
+	CoverUrl string
+	Category string
+	Intro    string
+	Remark   string
+}
+
 type Repository interface {
 	List(ctx context.Context, f ListFilter) (list []Asset, total int, err error)
 	Create(ctx context.Context, title, coverUrl, remark string, kind int) (code string, err error)
@@ -84,6 +100,14 @@ type Repository interface {
 	AppendComicChapters(ctx context.Context, assetID int64, chapters []ComicChapter) error
 	ListComicChapters(ctx context.Context, assetID int64) ([]ComicChapter, error)
 	DeleteComicChapter(ctx context.Context, assetID int64, seq int) error
+	CreateNovel(ctx context.Context, in NovelCreateInput) (pk int64, code string, err error)
+	FindNovelByTitle(ctx context.Context, title string) (*Asset, error)
+	UpdateNovelReady(ctx context.Context, pk int64, bucket, coverKey, coverURL string, chapterCount, wordCount int) error
+	UpdateNovelStats(ctx context.Context, pk int64, chapterCount, wordCount int) error
+	ReplaceNovelChapters(ctx context.Context, assetID int64, chapters []NovelChapter) error
+	AppendNovelChapters(ctx context.Context, assetID int64, chapters []NovelChapter) error
+	ListNovelChapters(ctx context.Context, assetID int64) ([]NovelChapter, error)
+	DeleteNovelChapter(ctx context.Context, assetID int64, seq int) error
 	GetByCode(ctx context.Context, code string) (*Asset, error)
 	Delete(ctx context.Context, pk int64) error
 	Pick(ctx context.Context, appKey, siteCode, code string) (*Asset, error)

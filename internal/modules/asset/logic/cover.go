@@ -57,6 +57,9 @@ func (s *sAsset) ReplaceCover(ctx context.Context, code, filename string, body i
 	if a.Kind == consts.KindComics {
 		key = consts.PrefixComics + a.Code + "/cover.bnc"
 	}
+	if a.Kind == consts.KindNovel {
+		key = consts.PrefixNovel + a.Code + "/cover.bnc"
+	}
 	bucket := a.SourceBucket
 	if bucket == "" {
 		bucket = s.store.Bucket()
@@ -68,7 +71,7 @@ func (s *sAsset) ReplaceCover(ctx context.Context, code, filename string, body i
 	if oldJpg != key {
 		_ = s.store.RemoveObject(ctx, bucket, oldJpg)
 	}
-	if a.Kind == consts.KindComics && a.SourceKey != "" && a.SourceKey != key {
+	if (a.Kind == consts.KindComics || a.Kind == consts.KindNovel) && a.SourceKey != "" && a.SourceKey != key {
 		_ = s.store.RemoveObject(ctx, bucket, a.SourceKey)
 	}
 	return s.repo.UpdateCover(ctx, a.Pk, s.store.PublicURL(bucket, key), key, a.Kind)

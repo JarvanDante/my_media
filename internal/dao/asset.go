@@ -106,6 +106,9 @@ func (r *assetRepo) Delete(ctx context.Context, pk int64) error {
 		if _, err := tx.Model("media_comic_chapter").Ctx(ctx).Where("asset_id", pk).Delete(); err != nil {
 			return err
 		}
+		if _, err := tx.Model("media_novel_chapter").Ctx(ctx).Where("asset_id", pk).Delete(); err != nil {
+			return err
+		}
 		if _, err := tx.Model("site_asset_pick").Ctx(ctx).Where("asset_id", pk).Delete(); err != nil {
 			return err
 		}
@@ -215,7 +218,7 @@ func (r *assetRepo) UpdateCover(ctx context.Context, pk int64, coverURL, coverKe
 		"updated_at": gtime.Now(),
 	}
 	// 漫画封面挂在 source_key，后台预览靠它签链；视频 source_key 是原片，不能改。
-	if kind == consts.KindComics && coverKey != "" {
+	if (kind == consts.KindComics || kind == consts.KindNovel) && coverKey != "" {
 		data["source_key"] = coverKey
 	}
 	_, err := g.DB().Model("media_asset").Ctx(ctx).Where("id", pk).Data(data).Update()
@@ -333,6 +336,7 @@ func mapAsset(m g.Map) domain.Asset {
 		Category:        g.NewVar(m["category"]).String(),
 		Intro:           g.NewVar(m["intro"]).String(),
 		ChapterCount:    g.NewVar(m["chapter_count"]).Int(),
+		WordCount:       g.NewVar(m["word_count"]).Int(),
 		CreatedAt:       g.NewVar(m["created_at"]).String(),
 	}
 }

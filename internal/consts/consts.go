@@ -13,15 +13,21 @@ const (
 	KindComics  = 1
 	KindCartoon = 2
 	KindDouyin  = 3
+	KindNovel   = 4
 )
 
-// MinIO 对象前缀(桶 my-media)。视频 media/、漫画 comics/、动漫 cartoon/、抖音 video/ 同级。
+// MinIO 对象前缀(桶 my-media)。视频 media/、漫画 comics/、动漫 cartoon/、抖音 video/、小说封面 novels/ 同级。
 const (
 	PrefixMedia   = "media/"
 	PrefixComics  = "comics/"
 	PrefixCartoon = "cartoon/"
 	PrefixVideo   = "video/"
+	PrefixNovel   = "novels/"
 )
+
+func IsChapterKind(kind int) bool {
+	return kind == KindComics || kind == KindNovel
+}
 
 func IsHLSKind(kind int) bool {
 	return kind == KindVideo || kind == KindCartoon || kind == KindDouyin

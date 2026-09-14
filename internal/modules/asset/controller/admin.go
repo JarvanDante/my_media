@@ -70,6 +70,13 @@ func (c *Admin) Detail(ctx context.Context, req *v1.DetailReq) (res *v1.DetailRe
 		}
 		res.Chapters = wrapAdminComicPages(a.Code, chs)
 	}
+	if a.Kind == consts.KindNovel {
+		chs, e := c.svc.NovelChapters(ctx, a.Code)
+		if e != nil {
+			return nil, e
+		}
+		res.Chapters = chs
+	}
 	return res, nil
 }
 
@@ -158,17 +165,44 @@ func (c *Admin) ImportComics(ctx context.Context, req *v1.ImportComicsReq) (res 
 	return c.svc.ImportComics(ctx, filepath.Join(dir, saved), resume)
 }
 
+const maxNovelsZip = 200 << 20
+
+func (c *Admin) ImportNovels(ctx context.Context, req *v1.ImportNovelsReq) (res *v1.ImportNovelsRes, err error) {
+	r := ghttp.RequestFromCtx(ctx)
+	up := r.GetUploadFile("file")
+	if up == nil {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, "请上传 zip 文件")
+	}
+	if up.Size > maxNovelsZip {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, "压缩包不能超过 200MB")
+	}
+	if strings.ToLower(filepath.Ext(up.Filename)) != ".zip" {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, "只支持 .zip")
+	}
+	dir, err := os.MkdirTemp("", "novels-import-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+	saved, err := up.Save(dir)
+	if err != nil {
+		return nil, err
+	}
+	resume := req.Resume || r.Get("resume").Bool()
+	return c.svc.ImportNovels(ctx, filepath.Join(dir, saved), resume)
+}
+
 func toAdminItem(a domain.Asset) v1.AssetItem {
 	cover := playsign.WrapCover(a.Code, a.CoverUrl, "admin")
 	play := a.PlayUrl
-	if a.Kind != consts.KindComics {
+	if !consts.IsChapterKind(a.Kind) {
 		play = playsign.Wrap(a.Code, a.PlayUrl, "admin")
 	}
 	return v1.AssetItem{
 		Id: a.Code, Title: a.Title, CoverUrl: cover, Status: a.Status,
 		TranscodeStatus: a.TranscodeStatus, PlayUrl: play,
 		DurationSec: a.DurationSec, Kind: a.Kind, Category: a.Category,
-		ChapterCount: a.ChapterCount, CreatedAt: a.CreatedAt,
+		ChapterCount: a.ChapterCount, WordCount: a.WordCount, CreatedAt: a.CreatedAt,
 	}
 }
 

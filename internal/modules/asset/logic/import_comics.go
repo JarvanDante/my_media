@@ -277,8 +277,11 @@ func (s *sAsset) DeleteChapter(ctx context.Context, code string, seq int) (int, 
 	if a == nil {
 		return 0, 0, gerror.NewCode(errcode.CodeNotFound, "资产不存在")
 	}
+	if a.Kind == consts.KindNovel {
+		return s.deleteNovelChapter(ctx, a, seq)
+	}
 	if a.Kind != consts.KindComics {
-		return 0, 0, gerror.NewCode(errcode.CodeBadRequest, "该资产不是漫画")
+		return 0, 0, gerror.NewCode(errcode.CodeBadRequest, "该资产不是漫画或小说")
 	}
 	if s.store == nil {
 		return 0, 0, gerror.NewCode(errcode.CodeBadRequest, "MinIO 未初始化，拒绝删除以免残留对象")
@@ -339,7 +342,10 @@ func (s *sAsset) DeleteChapter(ctx context.Context, code string, seq int) (int, 
 }
 
 func (s *sAsset) decorateCover(ctx context.Context, a *domain.Asset) {
-	if a == nil || a.Kind != consts.KindComics || s.store == nil || a.SourceKey == "" {
+	if a == nil || s.store == nil || a.SourceKey == "" {
+		return
+	}
+	if a.Kind != consts.KindComics && a.Kind != consts.KindNovel {
 		return
 	}
 	if u := s.signObject(ctx, a.SourceBucket, a.SourceKey); u != "" {

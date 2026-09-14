@@ -21,7 +21,9 @@ type Asset interface {
 	ReplaceCover(ctx context.Context, code, filename string, body io.Reader, size int64) error
 	HandleTranscodeResult(ctx context.Context, msg transcode.ResultMessage) error
 	ImportComics(ctx context.Context, zipPath string, resume bool) (*v1.ImportComicsRes, error)
+	ImportNovels(ctx context.Context, zipPath string, resume bool) (*v1.ImportNovelsRes, error)
 	ComicChapters(ctx context.Context, code string) ([]v1.ComicChapterItem, error)
+	NovelChapters(ctx context.Context, code string) ([]v1.ComicChapterItem, error)
 	DeleteChapter(ctx context.Context, code string, seq int) (deletedObjects int, chapterCount int, err error)
 
 	ListPicks(ctx context.Context, appKey string, page, size int) (list []domain.PickRecord, total int, err error)

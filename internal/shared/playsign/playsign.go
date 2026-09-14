@@ -176,7 +176,9 @@ func isPrivateMediaCover(raw, code string) bool {
 		return true
 	}
 	return strings.Contains(raw, "/comics/"+code+"/") ||
+		strings.Contains(raw, "/novels/"+code+"/") ||
 		strings.Contains(raw, "/my-media/comics/") ||
+		strings.Contains(raw, "/my-media/novels/") ||
 		strings.Contains(raw, "/my-media/cartoon/") ||
 		strings.Contains(raw, "/my-media/video/")
 }

@@ -44,7 +44,7 @@ func (s *sAsset) List(ctx context.Context, f domain.ListFilter) ([]domain.Asset,
 
 func (s *sAsset) Create(ctx context.Context, title, coverUrl, remark string, kind int) (string, error) {
 	if !consts.IsHLSKind(kind) {
-		return "", gerror.NewCode(errcode.CodeBadRequest, "创建只支持视频、抖音或动漫，漫画请用 zip 导入")
+		return "", gerror.NewCode(errcode.CodeBadRequest, "创建只支持视频、抖音或动漫，漫画和小说请用 zip 导入")
 	}
 	return s.repo.Create(ctx, title, coverUrl, remark, kind)
 }
@@ -122,6 +122,7 @@ func objectPrefixesForAsset(a *domain.Asset) []string {
 		add(consts.PrefixVideo + "source/" + a.Code)
 		add(consts.PrefixVideo + "hls/" + a.Code)
 		add(consts.PrefixComics + a.Code)
+		add(consts.PrefixNovel + a.Code)
 	}
 	// 兼容早期用数字主键拼路径：media/hls/4/index.m3u8
 	if a.PlayKey != "" {
@@ -164,8 +165,8 @@ func (s *sAsset) PresignUpload(ctx context.Context, code, filename string) (*v1.
 	if a == nil {
 		return nil, gerror.NewCode(errcode.CodeNotFound, "资产不存在")
 	}
-	if a.Kind == consts.KindComics {
-		return nil, gerror.NewCode(errcode.CodeBadRequest, "漫画请用批量 zip 导入，不必上传视频原片")
+	if a.Kind == consts.KindComics || a.Kind == consts.KindNovel {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, "漫画和小说请用批量 zip 导入，不必上传视频原片")
 	}
 	ext := strings.ToLower(filepath.Ext(filename))
 	if ext == "" {
@@ -203,8 +204,8 @@ func (s *sAsset) TriggerTranscode(ctx context.Context, code string, coverSeekSec
 	if a == nil {
 		return "", gerror.NewCode(errcode.CodeNotFound, "资产不存在")
 	}
-	if a.Kind == consts.KindComics {
-		return "", gerror.NewCode(errcode.CodeBadRequest, "漫画无需转码")
+	if a.Kind == consts.KindComics || a.Kind == consts.KindNovel {
+		return "", gerror.NewCode(errcode.CodeBadRequest, "漫画和小说无需转码")
 	}
 	if a.SourceBucket == "" || a.SourceKey == "" {
 		return "", gerror.NewCode(errcode.CodeBadRequest, "请先获取上传地址并上传原片")

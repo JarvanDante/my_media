@@ -13,6 +13,7 @@ type AssetItem struct {
 	Kind            int    `json:"kind"`
 	Category        string `json:"category"`
 	ChapterCount    int    `json:"chapter_count"`
+	WordCount       int    `json:"word_count,omitempty"`
 	CreatedAt       string `json:"created_at"`
 }
 
@@ -22,7 +23,7 @@ type ListReq struct {
 	Size    int    `json:"size" d:"20"`
 	Keyword string `json:"keyword"`
 	Status  int    `json:"status" d:"-1"`
-	Kind    int    `json:"kind" d:"-1"` // -1全部 0视频 1漫画 2动漫 3抖音
+	Kind    int    `json:"kind" d:"-1"` // -1全部 0视频 1漫画 2动漫 3抖音 4小说
 }
 
 type ListRes struct {
@@ -35,7 +36,7 @@ type CreateReq struct {
 	Title    string `json:"title" v:"required#标题必填"`
 	CoverUrl string `json:"cover_url"`
 	Remark   string `json:"remark"`
-	Kind     int    `json:"kind" d:"0"` // 0视频 2动漫 3抖音；漫画请走 zip 导入
+	Kind     int    `json:"kind" d:"0"` // 0视频 2动漫 3抖音；漫画/小说请走 zip 导入
 }
 
 type CreateRes struct {
@@ -102,7 +103,7 @@ type DeleteRes struct {
 }
 
 type DeleteChapterReq struct {
-	g.Meta `path:"/admin/assets/{id}/chapters/{seq}" method:"delete" tags:"Admin/Asset" summary:"删除漫画单集并清理页图"`
+	g.Meta `path:"/admin/assets/{id}/chapters/{seq}" method:"delete" tags:"Admin/Asset" summary:"删除漫画/小说单章"`
 	Id     string `json:"id" in:"path" v:"required|length:8,16"`
 	Seq    int    `json:"seq" in:"path" v:"required|min:1"`
 }
@@ -122,7 +123,9 @@ type ComicChapterItem struct {
 	Seq       int             `json:"seq"`
 	Title     string          `json:"title"`
 	PageCount int             `json:"page_count"`
-	Pages     []ComicPageItem `json:"pages"`
+	Pages     []ComicPageItem `json:"pages,omitempty"`
+	Content   string          `json:"content,omitempty"`
+	WordCount int             `json:"word_count,omitempty"`
 }
 
 type ImportComicsReq struct {
@@ -150,4 +153,31 @@ type ImportComicsRes struct {
 	FailedCount int                `json:"failed_count"`
 	List        []ImportComicsItem `json:"list"`
 	Failed      []ImportComicsFail `json:"failed"`
+}
+
+type ImportNovelsReq struct {
+	g.Meta `path:"/admin/novels/import" method:"post" mime:"multipart/form-data" tags:"Admin/Asset" summary:"小说 zip 批量入库"`
+	Resume bool `json:"resume" p:"resume" dc:"续载：同名小说追加新章，已有章序跳过"`
+}
+
+type ImportNovelsItem struct {
+	Id           string `json:"id"`
+	Title        string `json:"title"`
+	Category     string `json:"category"`
+	ChapterCount int    `json:"chapter_count"`
+	WordCount    int    `json:"word_count"`
+	Appended     bool   `json:"appended"`
+	SkippedCount int    `json:"skipped_count"`
+}
+
+type ImportNovelsFail struct {
+	Title string `json:"title"`
+	Error string `json:"error"`
+}
+
+type ImportNovelsRes struct {
+	Imported    int                `json:"imported"`
+	FailedCount int                `json:"failed_count"`
+	List        []ImportNovelsItem `json:"list"`
+	Failed      []ImportNovelsFail `json:"failed"`
 }

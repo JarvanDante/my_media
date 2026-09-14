@@ -12,7 +12,9 @@ type ComicChapterItem struct {
 	Seq       int             `json:"seq"`
 	Title     string          `json:"title"`
 	PageCount int             `json:"page_count"`
-	Pages     []ComicPageItem `json:"pages"`
+	Pages     []ComicPageItem `json:"pages,omitempty"`
+	Content   string          `json:"content,omitempty"`
+	WordCount int             `json:"word_count,omitempty"`
 }
 
 type AssetItem struct {
@@ -32,7 +34,7 @@ type ListReq struct {
 	Page    int    `json:"page" d:"1"`
 	Size    int    `json:"size" d:"20"`
 	Keyword string `json:"keyword"`
-	Kind    int    `json:"kind" d:"0"` // 0视频 1漫画 2动漫 3抖音；默认视频以免旧站点拉到其它类型
+	Kind    int    `json:"kind" d:"0"` // 0视频 1漫画 2动漫 3抖音 4小说；默认视频以免旧站点拉到其它类型
 }
 
 type ListRes struct {
