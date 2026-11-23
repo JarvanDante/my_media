@@ -17,3 +17,8 @@ temp/
 temp.yaml
 bin
 **/config/config.yaml
+
+# 构建产物与编译输出
+dist/
+*.exe
+/my_media
