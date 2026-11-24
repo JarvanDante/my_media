@@ -23,14 +23,17 @@ import (
 )
 
 type dramaJobResult struct {
-	Imported    int                   `json:"imported"`
-	FailedCount int                   `json:"failed_count"`
-	List        []v1.ImportDramasItem `json:"list"`
-	Failed      []v1.ImportDramasFail `json:"failed"`
+	Imported       int                   `json:"imported"`
+	FailedCount    int                   `json:"failed_count"`
+	List           []v1.ImportDramasItem `json:"list"`
+	Failed         []v1.ImportDramasFail `json:"failed"`
+	ImportComplete bool                  `json:"import_complete"`
+	PlannedCount   int                   `json:"planned_count,omitempty"`
+	Planned        []dramaJobPlanSnap    `json:"planned,omitempty"`
 }
 
 func (s *sAsset) GetDramaImportJob(ctx context.Context, id string) (*v1.DramaImportJobRes, error) {
-	job, err := dao.GetDramaImportJobByCode(ctx, id)
+	job, err := s.getImportJobByCode(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -52,46 +55,53 @@ func (s *sAsset) dramaImportJobRes(ctx context.Context, job *dao.DramaImportJob)
 	if job.FinishedAt != nil {
 		res.FinishedAt = job.FinishedAt.UTC().Format(time.RFC3339)
 	}
-	var result dramaJobResult
-	if strings.TrimSpace(job.ResultJSON) != "" {
-		_ = json.Unmarshal([]byte(job.ResultJSON), &result)
-	}
-	res.Imported = result.Imported
-	res.FailedCount = result.FailedCount
+	result := parseDramaJobResult(job.ResultJSON)
+	assess := s.assessDramaImport(ctx, job, result, nil)
+	res.Imported = assess.Imported
+	res.FailedCount = assess.FailedCount
 	res.Failed = result.Failed
 	if res.Failed == nil {
 		res.Failed = []v1.ImportDramasFail{}
 	}
-	epTotal, epReady, epProc, epFail := 0, 0, 0, 0
+	seenFail := map[string]bool{}
+	for _, f := range res.Failed {
+		seenFail[f.ItemKey+"\x00"+f.Title+"\x00"+f.Error] = true
+	}
+	for _, f := range assess.Missing {
+		k := f.ItemKey + "\x00" + f.Title + "\x00" + f.Error
+		if !seenFail[k] {
+			res.Failed = append(res.Failed, f)
+			seenFail[k] = true
+		}
+	}
+	if len(res.Failed) > res.FailedCount {
+		res.FailedCount = len(res.Failed)
+	}
 	for _, it := range result.List {
 		row := v1.DramaImportJobDrama{
-			Id: it.Id, Title: it.Title, ChapterCount: it.ChapterCount,
+			Id: it.Id, Title: it.Title, ItemKey: it.ItemKey, ChapterCount: it.ChapterCount,
 			Appended: it.Appended, SkippedCount: it.SkippedCount, ImportedCount: it.ImportedCount,
 		}
 		if a, err := s.repo.GetByCode(ctx, it.Id); err == nil && a != nil {
-			c, err := dao.CountEpisodesByParent(ctx, a.Pk)
+			c, err := s.countEpisodes(ctx, a.Pk)
 			if err == nil {
 				row.ChapterCount = c.Total
 				row.ReadyCount = c.Ready
 				row.ProcessingCount = c.Processing
 				row.FailedCount = c.Failed
-				epTotal += c.Total
-				epReady += c.Ready
-				epProc += c.Processing
-				epFail += c.Failed
 			}
 		}
 		res.List = append(res.List, row)
 	}
-	res.EpisodeTotal = epTotal
-	res.EpisodeReady = epReady
-	res.EpisodeProcessing = epProc
-	res.EpisodeFailed = epFail
+	res.EpisodeTotal = assess.EpisodeTotal
+	res.EpisodeReady = assess.EpisodeReady
+	res.EpisodeProcessing = assess.EpisodeProc
+	res.EpisodeFailed = assess.EpisodeFail
 	return res, nil
 }
 
 func (s *sAsset) RetryDramaImportJob(ctx context.Context, id string) (*v1.DramaImportJobRes, error) {
-	job, err := dao.GetDramaImportJobByCode(ctx, id)
+	job, err := s.getImportJobByCode(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -106,25 +116,40 @@ func (s *sAsset) RetryDramaImportJob(ctx context.Context, id string) (*v1.DramaI
 	case dao.DramaJobQueued:
 		return s.dramaImportJobRes(ctx, job)
 	case dao.DramaJobImportDone:
+		result := parseDramaJobResult(job.ResultJSON)
+		assess := s.assessDramaImport(ctx, job, result, nil)
+		if !assess.ImportComplete {
+			if s.dramaBlobs() == nil || job.PackKey == "" || s.dramaBlobs().Stat(ctx, job.Bucket, job.PackKey) != nil {
+				return nil, gerror.NewCode(errcode.CodeBadRequest, "入库未完成且整包已不可用，无法补齐失败项，请重新上传")
+			}
+			if err := s.requeueImportJob(ctx, job.Pk); err != nil {
+				return nil, err
+			}
+			job, err = s.getImportJobByCode(ctx, id)
+			if err != nil {
+				return nil, err
+			}
+			return s.dramaImportJobRes(ctx, job)
+		}
 		if err := s.retryDramaTranscode(ctx, job); err != nil {
 			return nil, err
 		}
-		job, err = dao.GetDramaImportJobByCode(ctx, id)
+		job, err = s.getImportJobByCode(ctx, id)
 		if err != nil {
 			return nil, err
 		}
 		return s.dramaImportJobRes(ctx, job)
 	case dao.DramaJobFailed, dao.DramaJobCanceled:
-		if job.PackKey == "" || s.store == nil {
+		if job.PackKey == "" || s.dramaBlobs() == nil {
 			return nil, gerror.NewCode(errcode.CodeBadRequest, "整包已不可用，请重新上传")
 		}
-		if err := s.store.Stat(ctx, job.Bucket, job.PackKey); err != nil {
+		if err := s.dramaBlobs().Stat(ctx, job.Bucket, job.PackKey); err != nil {
 			return nil, gerror.NewCode(errcode.CodeBadRequest, "整包已不可用，请重新上传")
 		}
-		if err := dao.RequeueDramaImportJob(ctx, job.Pk); err != nil {
+		if err := s.requeueImportJob(ctx, job.Pk); err != nil {
 			return nil, err
 		}
-		job, err = dao.GetDramaImportJobByCode(ctx, id)
+		job, err = s.getImportJobByCode(ctx, id)
 		if err != nil {
 			return nil, err
 		}
@@ -165,12 +190,12 @@ func (s *sAsset) retryDramaTranscode(ctx context.Context, job *dao.DramaImportJo
 	msg := job.Message
 	if len(errs) > 0 {
 		msg = "转码补投部分失败：" + strings.Join(errs, "；")
-		if err := dao.UpdateDramaImportJobResult(ctx, job.Pk, dao.DramaJobImportDone, "transcoding", msg, job.ResultJSON, 100); err != nil {
+		if err := s.updateImportJobResult(ctx, job.Pk, dao.DramaJobImportDone, "transcoding", msg, job.ResultJSON, 100); err != nil {
 			return err
 		}
 		return gerror.NewCode(errcode.CodeBadRequest, msg)
 	}
-	return dao.UpdateDramaImportJobResult(ctx, job.Pk, dao.DramaJobImportDone, "transcoding", "已补投转码任务", job.ResultJSON, 100)
+	return s.updateImportJobResult(ctx, job.Pk, dao.DramaJobImportDone, "transcoding", "已补投转码任务", job.ResultJSON, 100)
 }
 
 func newDramaImportWorkerID() string {
@@ -206,10 +231,6 @@ func leaseCallContext(timeout time.Duration) (context.Context, context.CancelFun
 		timeout = dao.DramaJobLeaseCallTimeout(dao.DefaultDramaJobLeaseTTL)
 	}
 	return context.WithTimeout(context.Background(), timeout)
-}
-
-func canCleanupDramaImportTemp(finishErr error, leaseLost bool) bool {
-	return finishErr == nil && !leaseLost
 }
 
 type dramaLeaseOps struct {
@@ -391,22 +412,24 @@ func (s *sAsset) cleanupExpiredDramaUploads(ctx context.Context) {
 }
 
 func (s *sAsset) refreshImportDoneJobs(ctx context.Context) {
-	list, err := dao.ListImportDoneDramaJobs(ctx, 50)
+	list, err := s.listImportDoneJobs(ctx, 50)
 	if err != nil {
 		g.Log().Warningf(ctx, "list import_done jobs: %v", err)
 		return
 	}
 	for i := range list {
 		job := list[i]
-		res, err := s.dramaImportJobRes(ctx, &job)
-		if err != nil || res.EpisodeTotal == 0 {
+		result := parseDramaJobResult(job.ResultJSON)
+		assess := s.assessDramaImport(ctx, &job, result, nil)
+		if !assess.ImportComplete {
 			continue
 		}
-		if res.EpisodeReady >= res.EpisodeTotal && res.EpisodeFailed == 0 && res.EpisodeProcessing == 0 {
-			msg := fmt.Sprintf("全部 %d 集转码完成", res.EpisodeTotal)
-			if err := dao.UpdateDramaImportJobResult(ctx, job.Pk, dao.DramaJobSucceeded, "succeeded", msg, job.ResultJSON, 100); err != nil {
-				g.Log().Warningf(ctx, "mark job succeeded %s: %v", job.Code, err)
-			}
+		if assess.EpisodeTotal == 0 || assess.EpisodeReady < assess.EpisodeTotal || assess.EpisodeFail > 0 || assess.EpisodeProc > 0 {
+			continue
+		}
+		msg := fmt.Sprintf("全部 %d 集转码完成", assess.EpisodeTotal)
+		if err := s.updateImportJobResult(ctx, job.Pk, dao.DramaJobSucceeded, "succeeded", msg, job.ResultJSON, 100); err != nil {
+			g.Log().Warningf(ctx, "mark job succeeded %s: %v", job.Code, err)
 		}
 	}
 }
@@ -447,13 +470,13 @@ func (s *sAsset) execDramaImportJob(ctx context.Context, job *dao.DramaImportJob
 	}); err != nil {
 		return err
 	}
-	if s.store == nil {
+	if s.dramaBlobs() == nil {
 		return s.failDramaJob(ctx, lease, job, ops, "MinIO 未初始化", 5)
 	}
 	if job.PackKey == "" || !strings.HasPrefix(job.PackKey, consts.PrefixDrama+"import/"+job.UploadCode+"/") {
 		return s.failDramaJob(ctx, lease, job, ops, "整包对象不属于本任务会话", 5)
 	}
-	size, err := s.store.ObjectSize(ctx, job.Bucket, job.PackKey)
+	size, err := s.dramaBlobs().ObjectSize(ctx, job.Bucket, job.PackKey)
 	if err != nil {
 		return s.failDramaJob(ctx, lease, job, ops, "整包不存在或无法读取", 5)
 	}
@@ -482,57 +505,70 @@ func (s *sAsset) execDramaImportJob(ctx context.Context, job *dao.DramaImportJob
 	}); err != nil {
 		return err
 	}
-	out, err := s.importDramasFromPack(ctx, packPath, "pack.zip", job.PlanJSON, lease)
+	out, err := s.importDramasFromPack(ctx, packPath, "pack.zip", job.PlanJSON, lease, lim)
 	result := dramaJobResult{}
 	if out != nil {
 		result.Imported = out.Imported
 		result.FailedCount = out.FailedCount
 		result.List = out.List
 		result.Failed = out.Failed
+		result.ImportComplete = out.ImportComplete
+		result.PlannedCount = out.PlannedCount
+	}
+	if groups, gerr := peekDramaPlanGroups(packPath, "pack.zip", job.PlanJSON); gerr == nil {
+		result.Planned = planSnapsFromGroups(groups)
+		result.PlannedCount = len(result.Planned)
+	}
+	assess := s.assessDramaImport(ctx, job, result, nil)
+	result.ImportComplete = assess.ImportComplete
+	result.Imported = assess.Imported
+	if assess.FailedCount > result.FailedCount {
+		result.FailedCount = assess.FailedCount
+	}
+	if len(assess.Missing) > 0 {
+		result.Failed = mergeImportFails(result.Failed, assess.Missing)
 	}
 	raw, _ := json.Marshal(result)
-	if err != nil && result.Imported == 0 {
-		msg := err.Error()
-		if ctx.Err() != nil && !errors.Is(ctx.Err(), context.DeadlineExceeded) && !errors.Is(err, context.DeadlineExceeded) {
-			return err
+
+	if err != nil && ctx.Err() != nil && !errors.Is(ctx.Err(), context.DeadlineExceeded) && !errors.Is(err, context.DeadlineExceeded) && result.Imported == 0 && !result.ImportComplete {
+		return err
+	}
+
+	if !result.ImportComplete {
+		msg := assess.Reason
+		if msg == "" && err != nil {
+			msg = err.Error()
+		}
+		if msg == "" {
+			msg = "入库未完成，整包已保留，可重试补齐失败项"
 		}
 		if ctxImportCanceled(ctx) != nil {
-			msg = "超时/取消，结果可能部分完成，请刷新核对后再决定重试"
+			msg = "超时/取消，结果可能部分完成，整包已保留，请刷新核对后再决定重试"
 		}
 		ferr := ops.bounded(func(c context.Context) error {
-			return ops.Finish(c, lease, dao.DramaJobFailed, "failed", msg, msg, string(raw), 40)
+			return ops.Finish(c, lease, dao.DramaJobFailed, "import_incomplete", msg, msg, string(raw), 80)
 		})
-		if !canCleanupDramaImportTemp(ferr, errors.Is(ferr, dao.ErrDramaJobLeaseLost)) {
-			if ferr != nil {
-				g.Log().Warningf(ctx, "finish drama job %s: %v (import err: %s)", job.Code, ferr, msg)
-			}
-			return ferr
+		if ferr != nil {
+			g.Log().Warningf(ctx, "finish drama job %s: %v (import incomplete: %s)", job.Code, ferr, msg)
 		}
-		return nil
+		return ferr
 	}
+
 	msg := "入库完成，转码进行中"
 	if result.FailedCount > 0 {
-		msg = "入库完成，部分失败或转码投递失败，可按步重试"
+		msg = "入库完成，转码投递部分失败，可重试补投（无需整包）"
 	}
 	ferr := ops.bounded(func(c context.Context) error {
 		return ops.Finish(c, lease, dao.DramaJobImportDone, "transcoding", msg, "", string(raw), 100)
 	})
-	if !canCleanupDramaImportTemp(ferr, errors.Is(ferr, dao.ErrDramaJobLeaseLost)) {
+	leaseLost := errors.Is(ferr, dao.ErrDramaJobLeaseLost)
+	if !canCleanupDramaImportSource(true, ferr, leaseLost) {
 		if ferr != nil {
 			g.Log().Warningf(ctx, "finish drama job %s: %v", job.Code, ferr)
 		}
 		return ferr
 	}
-	if strings.HasPrefix(job.PackKey, consts.PrefixDrama+"import/"+job.UploadCode+"/") {
-		cctx, ccancel := leaseCallContext(ops.CallTimeout)
-		if err := s.store.RemoveObject(cctx, job.Bucket, job.PackKey); err != nil {
-			g.Log().Warningf(ctx, "cleanup pack %s: %v", job.PackKey, err)
-		}
-		if _, err := s.store.RemovePrefix(cctx, job.Bucket, consts.DramaImportPrefix(job.UploadCode)); err != nil {
-			g.Log().Warningf(ctx, "cleanup import prefix %s: %v", job.UploadCode, err)
-		}
-		ccancel()
-	}
+	s.cleanupDramaImportSource(ctx, job, ops)
 	return nil
 }
 
@@ -556,7 +592,7 @@ func (s *sAsset) failDramaJob(ctx context.Context, lease dao.DramaJobLease, job 
 }
 
 func (s *sAsset) downloadDramaPack(ctx context.Context, bucket, key, dest string, max int64) error {
-	rc, size, err := s.store.GetObject(ctx, bucket, key)
+	rc, size, err := s.dramaBlobs().GetObject(ctx, bucket, key)
 	if err != nil {
 		return fmt.Errorf("下载整包失败: %w", err)
 	}

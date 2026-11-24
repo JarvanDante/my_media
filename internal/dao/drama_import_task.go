@@ -1037,3 +1037,133 @@ func ClaimDramaImportJobOnDB(db gdb.DB, ctx context.Context, owner string, lease
 func WithDramaJobLeaseOnDB(db gdb.DB, ctx context.Context, lease DramaJobLease, fn func(ctx context.Context) error) error {
 	return withDramaJobLeaseDB(db, ctx, lease, fn)
 }
+
+func GetDramaImportJobByCodeOnDB(db gdb.DB, ctx context.Context, code string) (*DramaImportJob, error) {
+	if !ValidDramaImportCode(code) {
+		return nil, nil
+	}
+	row, err := db.Model("drama_import_job").Ctx(ctx).Where("code", code).One()
+	if err != nil {
+		return nil, err
+	}
+	if row.IsEmpty() {
+		return nil, nil
+	}
+	j := mapDramaJob(row.Map())
+	return &j, nil
+}
+
+func GetDramaImportJobByPKOnDB(db gdb.DB, ctx context.Context, id int64) (*DramaImportJob, error) {
+	if id <= 0 {
+		return nil, nil
+	}
+	row, err := db.Model("drama_import_job").Ctx(ctx).Where("id", id).One()
+	if err != nil {
+		return nil, err
+	}
+	if row.IsEmpty() {
+		return nil, nil
+	}
+	j := mapDramaJob(row.Map())
+	return &j, nil
+}
+
+func FinishDramaImportJobOnDB(db gdb.DB, ctx context.Context, lease DramaJobLease, status, stage, message, errMsg, resultJSON string, progress int) error {
+	return finishDramaImportJobDB(db, ctx, lease, status, stage, message, errMsg, resultJSON, progress)
+}
+
+func HeartbeatDramaImportJobOnDB(db gdb.DB, ctx context.Context, lease DramaJobLease, stage string, progress int, message string) error {
+	return heartbeatDramaImportJobDB(db, ctx, lease, stage, progress, message, DefaultDramaJobLeaseTTL)
+}
+
+func RenewDramaImportJobLeaseOnDB(db gdb.DB, ctx context.Context, lease DramaJobLease, ttl time.Duration) error {
+	return renewDramaImportJobLeaseDB(db, ctx, lease, ttl)
+}
+
+func ReleaseDramaImportJobLeaseOnDB(db gdb.DB, ctx context.Context, lease DramaJobLease) error {
+	return releaseDramaImportJobLeaseDB(db, ctx, lease)
+}
+
+func AssertDramaJobLeaseOnDB(db gdb.DB, ctx context.Context, lease DramaJobLease) error {
+	return assertDramaJobLeaseDB(db, ctx, lease)
+}
+
+func UpdateDramaImportJobResultOnDB(db gdb.DB, ctx context.Context, id int64, status, stage, message, resultJSON string, progress int) error {
+	if progress < 0 {
+		progress = 0
+	}
+	if progress > 100 {
+		progress = 100
+	}
+	_, err := db.Model("drama_import_job").Ctx(ctx).Where("id", id).
+		Where("status", DramaJobImportDone).
+		Data(g.Map{
+			"status":      status,
+			"stage":       stage,
+			"message":     message,
+			"result_json": resultJSON,
+			"progress":    progress,
+			"updated_at":  gtime.Now(),
+		}).Update()
+	return err
+}
+
+func RequeueDramaImportJobOnDB(db gdb.DB, ctx context.Context, id int64) error {
+	_, err := db.Model("drama_import_job").Ctx(ctx).
+		Where("id", id).
+		WhereIn("status", []string{DramaJobFailed, DramaJobCanceled}).
+		Data(g.Map{
+			"status":      DramaJobQueued,
+			"stage":       "queued",
+			"error":       "",
+			"attempts":    0,
+			"finished_at": nil,
+			"updated_at":  gtime.Now(),
+			"owner":       "",
+			"lease_until": nil,
+		}).Update()
+	return err
+}
+
+func ListImportDoneDramaJobsOnDB(db gdb.DB, ctx context.Context, limit int) ([]DramaImportJob, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := db.Model("drama_import_job").Ctx(ctx).
+		Where("status", DramaJobImportDone).
+		OrderAsc("id").Limit(limit).All()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DramaImportJob, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, mapDramaJob(row.Map()))
+	}
+	return out, nil
+}
+
+func CountEpisodesByParentOnDB(db gdb.DB, ctx context.Context, parentPK int64) (EpisodeStatusCount, error) {
+	var c EpisodeStatusCount
+	if parentPK <= 0 {
+		return c, nil
+	}
+	rows, err := db.Model("media_asset").Ctx(ctx).
+		Where("parent_id", parentPK).Fields("status").All()
+	if err != nil {
+		return c, err
+	}
+	for _, row := range rows {
+		c.Total++
+		switch toInt(row.Map()["status"]) {
+		case consts.AssetStatusReady:
+			c.Ready++
+		case consts.AssetStatusProcessing:
+			c.Processing++
+		case consts.AssetStatusFailed:
+			c.Failed++
+		default:
+			c.Draft++
+		}
+	}
+	return c, nil
+}

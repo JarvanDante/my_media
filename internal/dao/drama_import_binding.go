@@ -194,3 +194,24 @@ func resolveDramaImportSeriesDB(db gdb.DB, ctx context.Context, jobPK int64, ite
 func ResolveDramaImportSeriesOnDB(db gdb.DB, ctx context.Context, jobPK int64, itemKey, title, explicitTarget string) (*domain.Asset, bool, error) {
 	return resolveDramaImportSeriesDB(db, ctx, jobPK, itemKey, title, explicitTarget)
 }
+
+func ListDramaImportItemBindingsOnDB(db gdb.DB, ctx context.Context, jobPK int64) ([]DramaImportItemBinding, error) {
+	if jobPK <= 0 {
+		return nil, errors.New("缺少导入任务")
+	}
+	rows, err := db.Model("drama_import_job_item").Ctx(ctx).Where("job_id", jobPK).OrderAsc("id").All()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DramaImportItemBinding, 0, len(rows))
+	for _, row := range rows {
+		m := row.Map()
+		out = append(out, DramaImportItemBinding{
+			JobPK:     jobPK,
+			ItemKey:   toStr(m["item_key"]),
+			DramaCode: toStr(m["drama_code"]),
+			Explicit:  toBool(m["explicit"]),
+		})
+	}
+	return out, nil
+}

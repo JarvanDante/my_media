@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gogf/gf/v2/database/gdb"
 	"github.com/gogf/gf/v2/errors/gerror"
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/google/uuid"
@@ -26,6 +27,11 @@ type sAsset struct {
 	repo  domain.Repository
 	store *storage.Minio
 	bus   *mq.Bus
+
+	// 可选覆盖：隔离测试注入对象存储与任务库，生产保持 nil，行为与仅用 store/g.DB 相同。
+	objects               dramaObjectStore
+	jobDB                 gdb.DB
+	enqueueDramaTranscode func(ctx context.Context, lease dao.DramaJobLease, code string, coverSeekSec int) (string, error)
 }
 
 func New(repo domain.Repository, store *storage.Minio, bus *mq.Bus) service.Asset {
@@ -236,6 +242,9 @@ func (s *sAsset) triggerTranscodeIfLease(ctx context.Context, lease dao.DramaJob
 }
 
 func (s *sAsset) triggerTranscode(ctx context.Context, lease dao.DramaJobLease, code string, coverSeekSec int) (string, error) {
+	if s.enqueueDramaTranscode != nil {
+		return s.enqueueDramaTranscode(ctx, lease, code, coverSeekSec)
+	}
 	if s.bus == nil || !s.bus.Enabled() {
 		return "", gerror.NewCode(errcode.CodeBadRequest, "Kafka 未启用")
 	}

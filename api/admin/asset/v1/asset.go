@@ -284,6 +284,7 @@ type ImportDramasReq struct {
 type ImportDramasItem struct {
 	Id            string `json:"id"`
 	Title         string `json:"title"`
+	ItemKey       string `json:"item_key,omitempty"`
 	ChapterCount  int    `json:"chapter_count"`
 	Appended      bool   `json:"appended"`
 	SkippedCount  int    `json:"skipped_count"`
@@ -291,16 +292,19 @@ type ImportDramasItem struct {
 }
 
 type ImportDramasFail struct {
-	Title string `json:"title"`
-	Error string `json:"error"`
+	Title   string `json:"title"`
+	Error   string `json:"error"`
+	ItemKey string `json:"item_key,omitempty"`
 }
 
 type ImportDramasRes struct {
-	JobId       string             `json:"job_id,omitempty"`
-	Imported    int                `json:"imported"`
-	FailedCount int                `json:"failed_count"`
-	List        []ImportDramasItem `json:"list"`
-	Failed      []ImportDramasFail `json:"failed"`
+	JobId          string             `json:"job_id,omitempty"`
+	Imported       int                `json:"imported"`
+	FailedCount    int                `json:"failed_count"`
+	List           []ImportDramasItem `json:"list"`
+	Failed         []ImportDramasFail `json:"failed"`
+	ImportComplete bool               `json:"import_complete,omitempty"`
+	PlannedCount   int                `json:"planned_count,omitempty"`
 }
 
 type DramaUploadPart struct {
@@ -373,6 +377,7 @@ type AbortDramaUploadRes struct {
 type DramaImportJobDrama struct {
 	Id              string `json:"id"`
 	Title           string `json:"title"`
+	ItemKey         string `json:"item_key,omitempty"`
 	ChapterCount    int    `json:"chapter_count"`
 	Appended        bool   `json:"appended"`
 	SkippedCount    int    `json:"skipped_count"`

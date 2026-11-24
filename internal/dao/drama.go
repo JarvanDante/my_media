@@ -15,7 +15,7 @@ import (
 )
 
 func (r *assetRepo) CreateDrama(ctx context.Context, title, coverUrl, remark, intro string, updateStatus int) (string, error) {
-	return createDramaDB(g.DB(), ctx, title, coverUrl, remark, intro, updateStatus)
+	return createDramaDB(r.dbx(), ctx, title, coverUrl, remark, intro, updateStatus)
 }
 
 func createDramaDB(db gdb.DB, ctx context.Context, title, coverUrl, remark, intro string, updateStatus int) (string, error) {
@@ -85,14 +85,14 @@ func (r *assetRepo) CreateEpisode(ctx context.Context, parentPK int64, seq int, 
 		if err != nil {
 			return "", false, err
 		}
-		exist, err := g.DB().Model("media_asset").Ctx(ctx).Where("code", c).One()
+		exist, err := r.dbx().Model("media_asset").Ctx(ctx).Where("code", c).One()
 		if err != nil {
 			return "", false, err
 		}
 		if !exist.IsEmpty() {
 			continue
 		}
-		_, err = g.DB().Model("media_asset").Ctx(ctx).Data(g.Map{
+		_, err = r.dbx().Model("media_asset").Ctx(ctx).Data(g.Map{
 			"code":             c,
 			"title":            title,
 			"kind":             consts.KindDrama,
@@ -140,7 +140,7 @@ func (r *assetRepo) FindDramasByTitle(ctx context.Context, title string) ([]doma
 }
 
 func (r *assetRepo) ListEpisodes(ctx context.Context, parentPK int64) ([]domain.Asset, error) {
-	rows, err := g.DB().Model("media_asset").Ctx(ctx).
+	rows, err := r.dbx().Model("media_asset").Ctx(ctx).
 		Where("parent_id", parentPK).OrderAsc("seq").OrderAsc("id").All()
 	if err != nil {
 		return nil, err
@@ -153,7 +153,7 @@ func (r *assetRepo) ListEpisodes(ctx context.Context, parentPK int64) ([]domain.
 }
 
 func (r *assetRepo) FindEpisode(ctx context.Context, parentPK int64, seq int) (*domain.Asset, error) {
-	row, err := g.DB().Model("media_asset").Ctx(ctx).
+	row, err := r.dbx().Model("media_asset").Ctx(ctx).
 		Where("parent_id", parentPK).Where("seq", seq).One()
 	if err != nil {
 		return nil, err
@@ -166,7 +166,7 @@ func (r *assetRepo) FindEpisode(ctx context.Context, parentPK int64, seq int) (*
 }
 
 func (r *assetRepo) UpdateChapterCount(ctx context.Context, pk int64, n int) error {
-	_, err := g.DB().Model("media_asset").Ctx(ctx).Where("id", pk).Data(g.Map{
+	_, err := r.dbx().Model("media_asset").Ctx(ctx).Where("id", pk).Data(g.Map{
 		"chapter_count": n,
 		"updated_at":    gtime.Now(),
 	}).Update()

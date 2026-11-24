@@ -16,7 +16,20 @@ import (
 
 var ErrAssetNotReady = errors.New("asset not ready")
 
-type assetRepo struct{}
+type assetRepo struct {
+	db gdb.DB
+}
+
+func NewAssetRepoOnDB(db gdb.DB) domain.Repository {
+	return &assetRepo{db: db}
+}
+
+func (r *assetRepo) dbx() gdb.DB {
+	if r != nil && r.db != nil {
+		return r.db
+	}
+	return g.DB()
+}
 
 func NewAssetRepo() domain.Repository { return &assetRepo{} }
 
@@ -94,7 +107,7 @@ func (r *assetRepo) Create(ctx context.Context, title, coverUrl, remark string, 
 }
 
 func (r *assetRepo) GetByCode(ctx context.Context, code string) (*domain.Asset, error) {
-	return getAssetByCodeDB(g.DB(), ctx, code)
+	return getAssetByCodeDB(r.dbx(), ctx, code)
 }
 
 func getAssetByCodeDB(db gdb.DB, ctx context.Context, code string) (*domain.Asset, error) {
@@ -215,7 +228,7 @@ func (r *assetRepo) Pick(ctx context.Context, appKey, siteCode, code string) (*d
 }
 
 func (r *assetRepo) BindSource(ctx context.Context, pk int64, bucket, key string) error {
-	_, err := g.DB().Model("media_asset").Ctx(ctx).Where("id", pk).Data(g.Map{
+	_, err := r.dbx().Model("media_asset").Ctx(ctx).Where("id", pk).Data(g.Map{
 		"source_bucket": bucket,
 		"source_key":    key,
 		"updated_at":    gtime.Now(),
@@ -232,12 +245,12 @@ func (r *assetRepo) UpdateCover(ctx context.Context, pk int64, coverURL, coverKe
 	if (kind == consts.KindComics || kind == consts.KindNovel) && coverKey != "" {
 		data["source_key"] = coverKey
 	}
-	_, err := g.DB().Model("media_asset").Ctx(ctx).Where("id", pk).Data(data).Update()
+	_, err := r.dbx().Model("media_asset").Ctx(ctx).Where("id", pk).Data(data).Update()
 	return err
 }
 
 func (r *assetRepo) MarkTranscoding(ctx context.Context, pk int64, jobID, profile string) error {
-	return g.DB().Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
+	return r.dbx().Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
 		_, err := tx.Model("media_asset").Ctx(ctx).Where("id", pk).Data(g.Map{
 			"status":           consts.AssetStatusProcessing,
 			"transcode_status": "pending",

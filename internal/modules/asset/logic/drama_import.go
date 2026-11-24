@@ -41,11 +41,11 @@ type DramaImportPlanEp struct {
 	Title string `json:"title"`
 }
 
-func (s *sAsset) importDramasFromPack(ctx context.Context, zipPath, zipName, planJSON string, lease dao.DramaJobLease) (*v1.ImportDramasRes, error) {
-	if s.store == nil {
+func (s *sAsset) importDramasFromPack(ctx context.Context, zipPath, zipName, planJSON string, lease dao.DramaJobLease, lim DramaImportLimits) (*v1.ImportDramasRes, error) {
+	if s.dramaBlobs() == nil {
 		return nil, gerror.NewCode(errcode.CodeBadRequest, "MinIO 未初始化")
 	}
-	lim := dramaImportLimits(ctx)
+	lim = lim.withDefaults()
 	if err := ctxImportCanceled(ctx); err != nil {
 		return nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
 	}
@@ -133,31 +133,43 @@ func (s *sAsset) importDramasFromPack(ctx context.Context, zipPath, zipName, pla
 	}
 	defer os.RemoveAll(workDir)
 
-	for _, g := range groups {
+	importOK := map[string]bool{}
+	for i, g := range groups {
 		if err := ctxImportCanceled(ctx); err != nil {
-			res.Failed = append(res.Failed, v1.ImportDramasFail{Title: g.Title, Error: err.Error()})
+			res.Failed = append(res.Failed, v1.ImportDramasFail{Title: g.Title, Error: err.Error(), ItemKey: g.ItemKey})
+			for _, rest := range groups[i+1:] {
+				res.Failed = append(res.Failed, v1.ImportDramasFail{Title: rest.Title, Error: err.Error(), ItemKey: rest.ItemKey})
+			}
 			break
 		}
-		item, ferr := s.importOneDrama(ctx, g, files, workDir, lim, lease)
+		item, ferr, complete := s.importOneDrama(ctx, g, files, workDir, lim, lease)
 		if item != nil {
+			item.ItemKey = g.ItemKey
 			res.List = append(res.List, *item)
 		}
+		if complete {
+			importOK[g.ItemKey] = true
+		}
 		if ferr != nil {
-			res.Failed = append(res.Failed, v1.ImportDramasFail{Title: g.Title, Error: ferr.Error()})
-			if item == nil {
-				continue
-			}
-			// 转码投递失败：原片已入库，仍计为导入成功项
+			res.Failed = append(res.Failed, v1.ImportDramasFail{Title: g.Title, Error: ferr.Error(), ItemKey: g.ItemKey})
 		}
 	}
-	res.Imported = len(res.List)
+	completeN := 0
+	for _, g := range groups {
+		if importOK[g.ItemKey] {
+			completeN++
+		}
+	}
+	res.PlannedCount = len(groups)
+	res.Imported = completeN
 	res.FailedCount = len(res.Failed)
-	if res.Imported == 0 {
+	res.ImportComplete = len(groups) > 0 && completeN == len(groups)
+	if completeN == 0 {
 		msg := "没有成功导入的短剧"
 		if len(res.Failed) > 0 {
 			msg = res.Failed[0].Error
 		}
-		return nil, gerror.NewCode(errcode.CodeBadRequest, msg)
+		return res, gerror.NewCode(errcode.CodeBadRequest, msg)
 	}
 	return res, nil
 }
@@ -306,25 +318,25 @@ func ctxImportCanceled(ctx context.Context) error {
 	return nil
 }
 
-func (s *sAsset) importOneDrama(ctx context.Context, g DramaZipGroup, files map[string]*zip.File, workDir string, lim DramaImportLimits, lease dao.DramaJobLease) (*v1.ImportDramasItem, error) {
+func (s *sAsset) importOneDrama(ctx context.Context, g DramaZipGroup, files map[string]*zip.File, workDir string, lim DramaImportLimits, lease dao.DramaJobLease) (*v1.ImportDramasItem, error, bool) {
 	if err := ctxImportCanceled(ctx); err != nil {
-		return nil, err
+		return nil, err, false
 	}
 	if g.NeedsConfirm {
 		msg := "需要确认后才能导入"
 		if len(g.Warnings) > 0 {
 			msg = g.Warnings[0]
 		}
-		return nil, fmt.Errorf("%s", msg)
+		return nil, fmt.Errorf("%s", msg), false
 	}
 	if strings.TrimSpace(g.Title) == "" || len(g.Videos) == 0 {
-		return nil, fmt.Errorf("缺少标题或剧集")
+		return nil, fmt.Errorf("缺少标题或剧集"), false
 	}
 
 	var series *domain.Asset
 	created := false
-	if err := withDramaImportLease(ctx, lease, func(ctx context.Context) error {
-		got, isNew, err := dao.ResolveDramaImportSeries(ctx, lease.JobPK, g.ItemKey, g.Title, g.TargetID)
+	if err := s.withImportLease(ctx, lease, func(ctx context.Context) error {
+		got, isNew, err := s.resolveImportSeries(ctx, lease.JobPK, g.ItemKey, g.Title, g.TargetID)
 		if err != nil {
 			return err
 		}
@@ -332,15 +344,25 @@ func (s *sAsset) importOneDrama(ctx context.Context, g DramaZipGroup, files map[
 		created = isNew
 		return nil
 	}); err != nil {
-		return nil, err
+		return nil, err, false
 	}
 
 	skipped := 0
 	imported := 0
 	var enqueueErrs []string
+	itemOf := func() *v1.ImportDramasItem {
+		count := imported + skipped
+		if latest, e := s.repo.GetByCode(ctx, series.Code); e == nil && latest != nil {
+			count = latest.ChapterCount
+		}
+		return &v1.ImportDramasItem{
+			Id: series.Code, Title: g.Title, ItemKey: g.ItemKey, ChapterCount: count,
+			Appended: !created, SkippedCount: skipped, ImportedCount: imported,
+		}
+	}
 	for _, v := range g.Videos {
 		if err := ctxImportCanceled(ctx); err != nil {
-			return nil, err
+			return itemOf(), err, false
 		}
 		epTitle := strings.TrimSpace(v.Name)
 		if strings.Contains(epTitle, ".") && videoExt[strings.ToLower(path.Ext(epTitle))] {
@@ -352,7 +374,7 @@ func (s *sAsset) importOneDrama(ctx context.Context, g DramaZipGroup, files map[
 		var code string
 		var isNew bool
 		var ep *domain.Asset
-		if err := withDramaImportLease(ctx, lease, func(ctx context.Context) error {
+		if err := s.withImportLease(ctx, lease, func(ctx context.Context) error {
 			var err error
 			code, isNew, err = s.repo.CreateEpisode(ctx, series.Pk, v.Seq, epTitle)
 			if err != nil {
@@ -364,7 +386,7 @@ func (s *sAsset) importOneDrama(ctx context.Context, g DramaZipGroup, files map[
 			}
 			return nil
 		}); err != nil {
-			return nil, err
+			return itemOf(), err, false
 		}
 		if !isNew && ep.Status == consts.AssetStatusReady {
 			skipped++
@@ -376,11 +398,11 @@ func (s *sAsset) importOneDrama(ctx context.Context, g DramaZipGroup, files map[
 		}
 		zf, ok := files[v.Path]
 		if !ok {
-			return nil, fmt.Errorf("压缩包缺少文件 %s", v.Path)
+			return itemOf(), fmt.Errorf("压缩包缺少文件 %s", v.Path), false
 		}
 		if ep.SourceKey == "" || isNew || ep.Status == consts.AssetStatusDraft || ep.Status == consts.AssetStatusFailed {
 			if err := s.putDramaSource(ctx, ep, zf, workDir, lim, lease); err != nil {
-				return nil, err
+				return itemOf(), err, false
 			}
 		}
 		if _, err := s.triggerTranscodeIfLease(ctx, lease, ep.Code, 8); err != nil {
@@ -389,31 +411,35 @@ func (s *sAsset) importOneDrama(ctx context.Context, g DramaZipGroup, files map[
 		imported++
 	}
 
-	if g.CoverPath != "" {
-		if zf, ok := files[g.CoverPath]; ok {
+	if strings.TrimSpace(g.CoverPath) != "" {
+		latest, err := s.repo.GetByCode(ctx, series.Code)
+		if err != nil {
+			return itemOf(), err, false
+		}
+		if latest != nil {
+			series = latest
+		}
+		if strings.TrimSpace(series.CoverUrl) == "" {
+			zf, ok := files[g.CoverPath]
+			if !ok {
+				return itemOf(), fmt.Errorf("压缩包缺少封面 %s", g.CoverPath), false
+			}
 			if err := s.putDramaSeriesCover(ctx, series, zf, lim, lease); err != nil {
-				return nil, fmt.Errorf("封面失败: %w", err)
+				return itemOf(), fmt.Errorf("封面失败: %w", err), false
 			}
 		}
 	}
-	if err := withDramaImportLease(ctx, lease, func(ctx context.Context) error {
+	if err := s.withImportLease(ctx, lease, func(ctx context.Context) error {
 		return s.refreshDramaCount(ctx, series.Pk)
 	}); err != nil {
-		return nil, err
+		return itemOf(), err, false
 	}
-	count := imported + skipped
-	if latest, e := s.repo.GetByCode(ctx, series.Code); e == nil && latest != nil {
-		count = latest.ChapterCount
-	}
-	item := &v1.ImportDramasItem{
-		Id: series.Code, Title: g.Title, ChapterCount: count,
-		Appended: !created, SkippedCount: skipped, ImportedCount: imported,
-	}
+	item := itemOf()
 	if len(enqueueErrs) > 0 {
-		// 原片已入库，任务记为部分成功，由重试补投 Kafka，不得吞掉投递失败。
-		return item, fmt.Errorf("%s", strings.Join(enqueueErrs, "；"))
+		// 原片（及封面）已入库，整包可清理；由重试补投 Kafka，不得吞掉投递失败。
+		return item, fmt.Errorf("%s", strings.Join(enqueueErrs, "；")), true
 	}
-	return item, nil
+	return item, nil, true
 }
 
 func (s *sAsset) putDramaSource(ctx context.Context, ep *domain.Asset, zf *zip.File, workDir string, lim DramaImportLimits, lease dao.DramaJobLease) error {
@@ -436,19 +462,19 @@ func (s *sAsset) putDramaSource(ctx context.Context, ep *domain.Asset, zf *zip.F
 		ext = ".mp4"
 	}
 	key := consts.SourceObjectPrefix(consts.KindDrama, ep.Code) + uuid.NewString() + ext
-	bucket := s.store.Bucket()
+	bucket := s.dramaBlobs().Bucket()
 	if err := ctxImportCanceled(ctx); err != nil {
 		return err
 	}
-	if err := s.store.PutObject(ctx, bucket, key, "video/mp4", f, st.Size()); err != nil {
+	if err := s.dramaBlobs().PutObject(ctx, bucket, key, "video/mp4", f, st.Size()); err != nil {
 		return gerror.Wrap(err, "上传原片失败")
 	}
-	err = withDramaImportLease(ctx, lease, func(ctx context.Context) error {
+	err = s.withImportLease(ctx, lease, func(ctx context.Context) error {
 		return s.repo.BindSource(ctx, ep.Pk, bucket, key)
 	})
 	if err != nil {
 		// 绑定未成功且对象 key 为本次 UUID，尽量收回，避免失租后留下无主原片引用。
-		if remErr := s.store.RemoveObject(ctx, bucket, key); remErr != nil {
+		if remErr := s.dramaBlobs().RemoveObject(ctx, bucket, key); remErr != nil {
 			// 降低残留，不保证删除成功
 		}
 		return err
@@ -474,16 +500,16 @@ func (s *sAsset) putDramaSeriesCover(ctx context.Context, series *domain.Asset, 
 		return err
 	}
 	key := consts.DramaCoverKey(series.Code)
-	bucket := s.store.Bucket()
+	bucket := s.dramaBlobs().Bucket()
 	if err := ctxImportCanceled(ctx); err != nil {
 		return err
 	}
-	if err := s.store.PutObject(ctx, bucket, key, "application/octet-stream", bytes.NewReader(enc), int64(len(enc))); err != nil {
+	if err := s.dramaBlobs().PutObject(ctx, bucket, key, "application/octet-stream", bytes.NewReader(enc), int64(len(enc))); err != nil {
 		return err
 	}
 	// 封面对象键固定，失租时不删除，以免误伤已绑定封面；仅 DB 绑定受租约事务保护。
-	return withDramaImportLease(ctx, lease, func(ctx context.Context) error {
-		if err := s.repo.UpdateCover(ctx, series.Pk, s.store.PublicURL(bucket, key), key, series.Kind); err != nil {
+	return s.withImportLease(ctx, lease, func(ctx context.Context) error {
+		if err := s.repo.UpdateCover(ctx, series.Pk, s.dramaBlobs().PublicURL(bucket, key), key, series.Kind); err != nil {
 			return err
 		}
 		return s.repo.BindSource(ctx, series.Pk, bucket, key)
