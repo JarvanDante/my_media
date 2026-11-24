@@ -36,10 +36,10 @@ type ListRes struct {
 }
 
 type CreateReq struct {
-	g.Meta   `path:"/admin/assets" method:"post" tags:"Admin/Asset" summary:"创建资产元数据"`
-	Title    string `json:"title" v:"required#标题必填"`
-	CoverUrl string `json:"cover_url"`
-	Remark   string `json:"remark"`
+	g.Meta       `path:"/admin/assets" method:"post" tags:"Admin/Asset" summary:"创建资产元数据"`
+	Title        string `json:"title" v:"required#标题必填"`
+	CoverUrl     string `json:"cover_url"`
+	Remark       string `json:"remark"`
 	Kind         int    `json:"kind" d:"0"` // 0视频 2动漫 3抖音 5短剧；漫画/小说请走 zip 导入
 	Intro        string `json:"intro"`
 	UpdateStatus int    `json:"update_status"`
@@ -56,12 +56,12 @@ type DetailReq struct {
 
 type DetailRes struct {
 	AssetItem
-	SourceBucket   string `json:"source_bucket"`
-	SourceKey      string `json:"source_key"`
-	PlayKey        string `json:"play_key"`
-	TranscodeJobId string `json:"transcode_job_id"`
-	TranscodeError string `json:"transcode_error"`
-	Remark         string `json:"remark"`
+	SourceBucket   string             `json:"source_bucket"`
+	SourceKey      string             `json:"source_key"`
+	PlayKey        string             `json:"play_key"`
+	TranscodeJobId string             `json:"transcode_job_id"`
+	TranscodeError string             `json:"transcode_error"`
+	Remark         string             `json:"remark"`
 	Chapters       []ComicChapterItem `json:"chapters,omitempty"`
 	Episodes       []DramaEpisodeItem `json:"episodes,omitempty"`
 }
@@ -260,12 +260,14 @@ type DramaImportLimitsReq struct {
 }
 
 type DramaImportLimitsRes struct {
-	MaxZipBytes     int64   `json:"max_zip_bytes"`
-	MaxExtractBytes int64   `json:"max_extract_bytes"`
-	MaxFiles        int     `json:"max_files"`
-	MaxFileBytes    int64   `json:"max_file_bytes"`
-	MaxRatio        float64 `json:"max_ratio"`
-	MinFreeBytes    int64   `json:"min_free_bytes"`
+	MaxZipBytes      int64   `json:"max_zip_bytes"`
+	MaxBodyBytes     int64   `json:"max_body_bytes"`
+	MaxExtractBytes  int64   `json:"max_extract_bytes"`
+	MaxFiles         int     `json:"max_files"`
+	MaxFileBytes     int64   `json:"max_file_bytes"`
+	MaxRatio         float64 `json:"max_ratio"`
+	MinFreeBytes     int64   `json:"min_free_bytes"`
+	ImportTimeoutSec int     `json:"import_timeout_sec"`
 }
 
 type ImportDramasReq struct {

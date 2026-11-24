@@ -14,38 +14,59 @@ import (
 	"unicode"
 )
 
-// 默认上限对齐现有 server.clientMaxBodySize / 漫画 zip：2GB，解压预留 2 倍。
+// 默认上限按公网可达性收敛：Cloudflare 免费/Pro 单请求约 100MB（官方文档），
+// 集群 Ingress/代理当前是 512MiB / 600s，只调大 Ingress 不能突破 Cloudflare。
+// max_zip 小于 max_body，给 multipart 表单留余量。超时与 Ingress 600s 对齐，超时即失败。
 const (
-	defaultMaxZipBytes     int64   = 2 << 30
-	defaultMaxExtractBytes int64   = 4 << 30
-	defaultMaxFiles        int     = 500
-	defaultMaxFileBytes    int64   = 2 << 30
-	defaultMaxRatio        float64 = 100
-	defaultMinFreeBytes    int64   = 1 << 30
+	defaultMaxBodyBytes     int64   = 100_000_000
+	defaultMultipartMargin  int64   = 4_000_000
+	defaultMaxZipBytes      int64   = 96_000_000
+	defaultMaxExtractBytes  int64   = 192_000_000
+	defaultMaxFiles         int     = 500
+	defaultMaxFileBytes     int64   = 96_000_000
+	defaultMaxRatio         float64 = 100
+	defaultMinFreeBytes     int64   = 1 << 30
+	defaultImportTimeoutSec int     = 600
 )
 
 type DramaImportLimits struct {
-	MaxZipBytes     int64
-	MaxExtractBytes int64
-	MaxFiles        int
-	MaxFileBytes    int64
-	MaxRatio        float64
-	MinFreeBytes    int64
+	MaxZipBytes      int64
+	MaxBodyBytes     int64
+	MaxExtractBytes  int64
+	MaxFiles         int
+	MaxFileBytes     int64
+	MaxRatio         float64
+	MinFreeBytes     int64
+	ImportTimeoutSec int
 }
 
 func DefaultDramaImportLimits() DramaImportLimits {
 	return DramaImportLimits{
-		MaxZipBytes:     defaultMaxZipBytes,
-		MaxExtractBytes: defaultMaxExtractBytes,
-		MaxFiles:        defaultMaxFiles,
-		MaxFileBytes:    defaultMaxFileBytes,
-		MaxRatio:        defaultMaxRatio,
-		MinFreeBytes:    defaultMinFreeBytes,
-	}
+		MaxZipBytes:      defaultMaxZipBytes,
+		MaxBodyBytes:     defaultMaxBodyBytes,
+		MaxExtractBytes:  defaultMaxExtractBytes,
+		MaxFiles:         defaultMaxFiles,
+		MaxFileBytes:     defaultMaxFileBytes,
+		MaxRatio:         defaultMaxRatio,
+		MinFreeBytes:     defaultMinFreeBytes,
+		ImportTimeoutSec: defaultImportTimeoutSec,
+	}.withDefaults()
 }
 
 func (l DramaImportLimits) withDefaults() DramaImportLimits {
-	d := DefaultDramaImportLimits()
+	d := DramaImportLimits{
+		MaxZipBytes:      defaultMaxZipBytes,
+		MaxBodyBytes:     defaultMaxBodyBytes,
+		MaxExtractBytes:  defaultMaxExtractBytes,
+		MaxFiles:         defaultMaxFiles,
+		MaxFileBytes:     defaultMaxFileBytes,
+		MaxRatio:         defaultMaxRatio,
+		MinFreeBytes:     defaultMinFreeBytes,
+		ImportTimeoutSec: defaultImportTimeoutSec,
+	}
+	if l.MaxBodyBytes <= 0 {
+		l.MaxBodyBytes = d.MaxBodyBytes
+	}
 	if l.MaxZipBytes <= 0 {
 		l.MaxZipBytes = d.MaxZipBytes
 	}
@@ -63,6 +84,20 @@ func (l DramaImportLimits) withDefaults() DramaImportLimits {
 	}
 	if l.MinFreeBytes <= 0 {
 		l.MinFreeBytes = d.MinFreeBytes
+	}
+	if l.ImportTimeoutSec <= 0 {
+		l.ImportTimeoutSec = d.ImportTimeoutSec
+	}
+	// 压缩包必须小于请求体，预留 multipart 余量。
+	capZip := l.MaxBodyBytes
+	if l.MaxBodyBytes > defaultMultipartMargin {
+		capZip = l.MaxBodyBytes - defaultMultipartMargin
+	}
+	if l.MaxZipBytes > capZip {
+		l.MaxZipBytes = capZip
+	}
+	if l.MaxFileBytes > l.MaxZipBytes {
+		l.MaxFileBytes = l.MaxZipBytes
 	}
 	return l
 }
@@ -94,13 +129,13 @@ type dramaFile struct {
 }
 
 type DramaZipGroup struct {
-	Title          string
-	Videos         []dramaFile
-	Covers         []dramaFile
-	CoverPath      string
-	Skipped        []string
-	Warnings       []string
-	NeedsConfirm   bool
+	Title        string
+	Videos       []dramaFile
+	Covers       []dramaFile
+	CoverPath    string
+	Skipped      []string
+	Warnings     []string
+	NeedsConfirm bool
 }
 
 func shouldIgnoreZipName(name string) bool {

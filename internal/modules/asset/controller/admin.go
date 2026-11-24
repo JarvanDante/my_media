@@ -230,7 +230,6 @@ func (c *Admin) ImportNovels(ctx context.Context, req *v1.ImportNovelsReq) (res 
 	return c.svc.ImportNovels(ctx, filepath.Join(dir, saved), resume)
 }
 
-
 func (c *Admin) UpdateAsset(ctx context.Context, req *v1.UpdateAssetReq) (res *v1.UpdateAssetRes, err error) {
 	a, err := c.svc.Get(ctx, req.Id)
 	if err != nil {
@@ -273,6 +272,10 @@ func (c *Admin) ImportDramas(ctx context.Context, req *v1.ImportDramasReq) (res 
 		return nil, gerror.NewCode(errcode.CodeBadRequest, "请上传 zip 文件")
 	}
 	lim := c.svc.ImportLimits(ctx)
+	if cl := r.Request.ContentLength; cl > 0 && lim.MaxBodyBytes > 0 && cl > lim.MaxBodyBytes {
+		return nil, gerror.NewCode(errcode.CodeBadRequest,
+			"请求体 "+humanAdminBytes(cl)+" 超过上限 "+humanAdminBytes(lim.MaxBodyBytes)+"（含表单余量，压缩包上限 "+humanAdminBytes(lim.MaxZipBytes)+"）")
+	}
 	if up.Size > lim.MaxZipBytes {
 		return nil, gerror.NewCode(errcode.CodeBadRequest, "压缩包超过上限 "+humanAdminBytes(lim.MaxZipBytes))
 	}
