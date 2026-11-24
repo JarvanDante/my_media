@@ -502,7 +502,7 @@ func (s *sAsset) execDramaImportJob(ctx context.Context, job *dao.DramaImportJob
 	}); err != nil {
 		return err
 	}
-	out, err := s.importDramasFromPack(ctx, packPath, "pack.zip", job.PlanJSON, lease, lim)
+	out, groups, err := s.importDramasFromPack(ctx, packPath, "pack.zip", job.PlanJSON, lease, lim)
 	result := dramaJobResult{}
 	if out != nil {
 		result.Imported = out.Imported
@@ -512,11 +512,16 @@ func (s *sAsset) execDramaImportJob(ctx context.Context, job *dao.DramaImportJob
 		result.ImportComplete = out.ImportComplete
 		result.PlannedCount = out.PlannedCount
 	}
-	if groups, gerr := peekDramaPlanGroups(packPath, "pack.zip", job.PlanJSON); gerr == nil {
+	if len(groups) == 0 {
+		if peeked, gerr := peekDramaPlanGroups(packPath, "pack.zip", job.PlanJSON); gerr == nil {
+			groups = peeked
+		}
+	}
+	if len(groups) > 0 {
 		result.Planned = planSnapsFromGroups(groups)
 		result.PlannedCount = len(result.Planned)
 	}
-	assess := s.assessDramaImport(ctx, job, result, nil)
+	assess := s.assessDramaImport(ctx, job, result, groups)
 	result.ImportComplete = assess.ImportComplete
 	result.Imported = assess.Imported
 	if assess.FailedCount > result.FailedCount {

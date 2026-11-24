@@ -43,26 +43,40 @@ func (s *sAsset) dramaBlobs() dramaObjectStore {
 }
 
 type dramaJobPlanSnap struct {
-	ItemKey string `json:"item_key"`
-	Title   string `json:"title"`
-	Cover   bool   `json:"cover"`
-	Seqs    []int  `json:"seqs"`
+	ItemKey string   `json:"item_key"`
+	Title   string   `json:"title"`
+	Cover   bool     `json:"cover"`
+	Seqs    []int    `json:"seqs"`
+	Paths   []string `json:"paths,omitempty"` // 完整ZIP分组时记下的路径，用作稳定身份证据；不是计划本身
 }
 
 func planSnapsFromGroups(groups []DramaZipGroup) []dramaJobPlanSnap {
 	out := make([]dramaJobPlanSnap, 0, len(groups))
 	for _, g := range groups {
 		seqs := make([]int, 0, len(g.Videos))
+		paths := make([]string, 0, len(g.Videos)+1)
 		for _, v := range g.Videos {
 			if v.Seq > 0 {
 				seqs = append(seqs, v.Seq)
+			}
+			if v.Path != "" {
+				paths = append(paths, v.Path)
+			}
+		}
+		if g.CoverPath != "" {
+			paths = append(paths, g.CoverPath)
+		}
+		for _, c := range g.Covers {
+			if c.Path != "" && c.Path != g.CoverPath {
+				paths = append(paths, c.Path)
 			}
 		}
 		out = append(out, dramaJobPlanSnap{
 			ItemKey: g.ItemKey,
 			Title:   g.Title,
-			Cover:   strings.TrimSpace(g.CoverPath) != "",
+			Cover:   g.CoverPath != "",
 			Seqs:    seqs,
+			Paths:   paths,
 		})
 	}
 	return out
@@ -115,80 +129,284 @@ func uniquePositiveSeqs(seqs []int) ([]int, bool) {
 	return out, true
 }
 
-func planSnapsFromImportPlan(plan DramaImportPlan) ([]dramaJobPlanSnap, error) {
+type planItemObligation struct {
+	Title     string
+	Cover     bool
+	CoverPath string
+	Seqs      []int
+	Paths     []string
+}
+
+func parsePlanItemObligation(i int, it DramaImportPlanItem) (planItemObligation, error) {
+	ob := planItemObligation{Title: it.Title}
+	var seqs []int
+	for _, ep := range it.Episodes {
+		if ep.Path == "" {
+			return ob, fmt.Errorf("计划第%d项剧集路径为空", i+1)
+		}
+		p, err := sanitizeZipEntryName(ep.Path)
+		if err != nil {
+			return ob, fmt.Errorf("计划第%d项剧集路径无效: %w", i+1, err)
+		}
+		ob.Paths = append(ob.Paths, p)
+		seqs = append(seqs, ep.Seq)
+	}
+	if it.Cover != "" {
+		c, err := sanitizeZipEntryName(it.Cover)
+		if err != nil {
+			return ob, fmt.Errorf("计划第%d项封面路径无效: %w", i+1, err)
+		}
+		ob.Cover = true
+		ob.CoverPath = c
+		ob.Paths = append(ob.Paths, c)
+	}
+	if len(ob.Paths) == 0 {
+		return ob, fmt.Errorf("计划第%d项缺少可用于映射目录身份的路径", i+1)
+	}
+	uniq, ok := uniquePositiveSeqs(seqs)
+	if !ok || len(uniq) == 0 {
+		return ob, fmt.Errorf("计划第%d项集号缺失、无效或重复，无法确定覆盖义务", i+1)
+	}
+	ob.Seqs = uniq
+	return ob, nil
+}
+
+func parsePlanObligations(plan DramaImportPlan) ([]planItemObligation, error) {
 	if len(plan.Items) == 0 {
 		return nil, fmt.Errorf("导入计划没有项目")
 	}
-	type rawItem struct {
-		item  DramaImportPlanItem
-		paths []string
-	}
-	var raws []rawItem
-	var allPaths []string
+	out := make([]planItemObligation, 0, len(plan.Items))
 	for i, it := range plan.Items {
-		var paths []string
-		for _, ep := range it.Episodes {
-			if ep.Path == "" {
-				continue
-			}
-			p, err := sanitizeZipEntryName(ep.Path)
-			if err != nil {
-				return nil, fmt.Errorf("计划第%d项剧集路径无效: %w", i+1, err)
-			}
-			paths = append(paths, p)
+		ob, err := parsePlanItemObligation(i, it)
+		if err != nil {
+			return nil, err
 		}
-		if it.Cover != "" {
-			c, err := sanitizeZipEntryName(it.Cover)
-			if err != nil {
-				return nil, fmt.Errorf("计划第%d项封面路径无效: %w", i+1, err)
-			}
-			paths = append(paths, c)
-		}
-		if len(paths) == 0 {
-			return nil, fmt.Errorf("计划第%d项缺少可用于确定目录身份的路径", i+1)
-		}
-		raws = append(raws, rawItem{item: it, paths: paths})
-		allPaths = append(allPaths, paths...)
+		out = append(out, ob)
 	}
-	parent := commonPackParent(allPaths)
-	seen := map[string]int{}
-	out := make([]dramaJobPlanSnap, 0, len(raws))
-	for i, r := range raws {
-		keyPath := r.paths[0]
-		for _, ep := range r.item.Episodes {
-			if ep.Path == "" {
-				continue
-			}
-			if p, err := sanitizeZipEntryName(ep.Path); err == nil {
-				keyPath = p
-				break
+	return out, nil
+}
+
+func seqSetEqual(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := map[int]int{}
+	for _, n := range a {
+		seen[n]++
+	}
+	for _, n := range b {
+		if seen[n] == 0 {
+			return false
+		}
+		seen[n]--
+	}
+	return true
+}
+
+func snapHasAllPaths(snap dramaJobPlanSnap, paths []string) bool {
+	if len(paths) == 0 || len(snap.Paths) == 0 {
+		return false
+	}
+	have := map[string]bool{}
+	for _, p := range snap.Paths {
+		have[p] = true
+	}
+	for _, p := range paths {
+		if !have[p] {
+			return false
+		}
+	}
+	return true
+}
+
+// findGroupByPlanPaths 只用路径隶属完整 ZIP 分组，不用标题。
+func findGroupByPlanPaths(groups []DramaZipGroup, ob planItemObligation) (DramaZipGroup, error) {
+	var found *DramaZipGroup
+	for _, p := range ob.Paths {
+		if ob.Cover && p == ob.CoverPath {
+			continue
+		}
+		var hit *DramaZipGroup
+		for i := range groups {
+			if inGroup(groups[i], p, false) {
+				if hit != nil && hit.ItemKey != groups[i].ItemKey {
+					return DramaZipGroup{}, fmt.Errorf("路径 %q 落在多个目录分组", p)
+				}
+				hit = &groups[i]
 			}
 		}
-		key, _ := dramaGroupKey(keyPath, parent, "pack.zip")
-		itemKey, err := dao.NormalizeDramaImportItemKey(key)
+		if hit == nil {
+			return DramaZipGroup{}, fmt.Errorf("计划路径 %q 不在完整压缩包分组中", p)
+		}
+		if found == nil {
+			found = hit
+		} else if found.ItemKey != hit.ItemKey {
+			return DramaZipGroup{}, fmt.Errorf("同一计划项的路径跨越不同目录身份")
+		}
+	}
+	if found == nil {
+		return DramaZipGroup{}, fmt.Errorf("计划项缺少可用于定位分组的剧集路径")
+	}
+	if ob.Cover && !inGroup(*found, ob.CoverPath, true) {
+		return DramaZipGroup{}, fmt.Errorf("封面不在对应目录分组内")
+	}
+	return *found, nil
+}
+
+func snapsFromPlanAndGroups(items []planItemObligation, groups []DramaZipGroup) ([]dramaJobPlanSnap, error) {
+	seen := map[string]int{}
+	out := make([]dramaJobPlanSnap, 0, len(items))
+	for i, ob := range items {
+		g, err := findGroupByPlanPaths(groups, ob)
+		if err != nil {
+			return nil, fmt.Errorf("计划第%d项无法映射到完整ZIP分组身份: %w", i+1, err)
+		}
+		key, err := dao.NormalizeDramaImportItemKey(g.ItemKey)
 		if err != nil {
 			return nil, fmt.Errorf("计划第%d项目录身份无效: %w", i+1, err)
 		}
-		if prev, ok := seen[itemKey]; ok {
-			return nil, fmt.Errorf("计划第%d项与第%d项目录身份 %q 冲突，拒绝合并覆盖义务", i+1, prev+1, itemKey)
+		if prev, ok := seen[key]; ok {
+			return nil, fmt.Errorf("计划第%d项与第%d项映射到同一目录身份 %q，拒绝合并覆盖义务", i+1, prev+1, key)
 		}
-		seen[itemKey] = i
-		var seqs []int
-		for _, ep := range r.item.Episodes {
-			seqs = append(seqs, ep.Seq)
-		}
-		uniq, ok := uniquePositiveSeqs(seqs)
-		if !ok || len(uniq) == 0 {
-			return nil, fmt.Errorf("计划第%d项集号缺失、无效或重复，无法确定覆盖义务", i+1)
-		}
+		seen[key] = i
 		out = append(out, dramaJobPlanSnap{
-			ItemKey: itemKey,
-			Title:   r.item.Title,
-			Cover:   r.item.Cover != "",
-			Seqs:    uniq,
+			ItemKey: key,
+			Title:   ob.Title,
+			Cover:   ob.Cover,
+			Seqs:    ob.Seqs,
+			Paths:   append([]string{}, ob.Paths...),
 		})
 	}
 	return out, nil
+}
+
+func planEpisodePaths(ob planItemObligation) []string {
+	out := make([]string, 0, len(ob.Paths))
+	for _, p := range ob.Paths {
+		if ob.Cover && p == ob.CoverPath {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+func mapPlanByCheckpointPaths(items []planItemObligation, snaps []dramaJobPlanSnap) ([]dramaJobPlanSnap, error) {
+	used := map[int]bool{}
+	out := make([]dramaJobPlanSnap, 0, len(items))
+	seen := map[string]int{}
+	for i, ob := range items {
+		match := -1
+		need := planEpisodePaths(ob)
+		if len(need) == 0 {
+			return nil, fmt.Errorf("计划第%d项缺少用于映射身份的剧集路径", i+1)
+		}
+		for j, snap := range snaps {
+			if !snapHasAllPaths(snap, need) {
+				continue
+			}
+			if match >= 0 {
+				return nil, fmt.Errorf("计划第%d项路径同时匹配多个身份检查点，拒绝推断", i+1)
+			}
+			match = j
+		}
+		if match < 0 {
+			return nil, fmt.Errorf("计划第%d项无法按路径映射到持久身份检查点", i+1)
+		}
+		if used[match] {
+			return nil, fmt.Errorf("多个计划项映射到同一持久身份检查点，拒绝推断")
+		}
+		used[match] = true
+		key, err := dao.NormalizeDramaImportItemKey(snaps[match].ItemKey)
+		if err != nil {
+			return nil, fmt.Errorf("检查点第%d项目录身份无效", match+1)
+		}
+		if prev, ok := seen[key]; ok {
+			return nil, fmt.Errorf("计划第%d项与第%d项映射到同一目录身份 %q", i+1, prev+1, key)
+		}
+		seen[key] = i
+		out = append(out, dramaJobPlanSnap{
+			ItemKey: key,
+			Title:   ob.Title,
+			Cover:   ob.Cover,
+			Seqs:    ob.Seqs,
+			Paths:   append([]string{}, ob.Paths...),
+		})
+	}
+	return out, nil
+}
+
+func mapPlanByCheckpointStructure(items []planItemObligation, snaps []dramaJobPlanSnap) ([]dramaJobPlanSnap, error) {
+	if len(items) != len(snaps) {
+		return nil, fmt.Errorf("持久身份检查点项数 %d 与原始计划项数 %d 不一致，拒绝按位置对齐身份", len(snaps), len(items))
+	}
+	seen := map[string]int{}
+	out := make([]dramaJobPlanSnap, 0, len(items))
+	for i, ob := range items {
+		if !seqSetEqual(ob.Seqs, snaps[i].Seqs) || ob.Cover != snaps[i].Cover {
+			return nil, fmt.Errorf("检查点第%d项的集号或封面义务与原始计划不一致，拒绝按位置对齐身份", i+1)
+		}
+		key, err := dao.NormalizeDramaImportItemKey(snaps[i].ItemKey)
+		if err != nil {
+			return nil, fmt.Errorf("检查点第%d项目录身份无效", i+1)
+		}
+		if prev, ok := seen[key]; ok {
+			return nil, fmt.Errorf("计划第%d项与第%d项映射到同一目录身份 %q", i+1, prev+1, key)
+		}
+		seen[key] = i
+		out = append(out, dramaJobPlanSnap{
+			ItemKey: key,
+			Title:   ob.Title,
+			Cover:   ob.Cover,
+			Seqs:    ob.Seqs,
+			Paths:   append([]string{}, ob.Paths...),
+		})
+	}
+	return out, nil
+}
+
+func mapPlanToIdentityCheckpoint(items []planItemObligation, snaps []dramaJobPlanSnap) ([]dramaJobPlanSnap, error) {
+	if len(snaps) == 0 {
+		return nil, fmt.Errorf("缺少持久身份检查点")
+	}
+	allHavePaths := true
+	anyHavePaths := false
+	for _, s := range snaps {
+		if len(s.Paths) > 0 {
+			anyHavePaths = true
+		} else {
+			allHavePaths = false
+		}
+	}
+	if allHavePaths {
+		return mapPlanByCheckpointPaths(items, snaps)
+	}
+	if !anyHavePaths {
+		return mapPlanByCheckpointStructure(items, snaps)
+	}
+	return nil, fmt.Errorf("持久身份检查点路径证据不完整，拒绝推断目录身份")
+}
+
+// resolvePlanObligations 以不可变原计划为覆盖义务（项目、集号、封面），
+// ItemKey 只来自完整 ZIP 初始分组或由此落下的持久身份检查点。
+// 绝不按选中子集重算共同父来生成新身份，也不按标题匹配，不改写原计划。
+func resolvePlanObligations(plan DramaImportPlan, groups []DramaZipGroup, result dramaJobResult) ([]dramaJobPlanSnap, error) {
+	items, err := parsePlanObligations(plan)
+	if err != nil {
+		return nil, err
+	}
+	if len(groups) > 0 {
+		return snapsFromPlanAndGroups(items, groups)
+	}
+	snaps, why := plannedCheckpointTrusted(result)
+	if why != "" {
+		return nil, fmt.Errorf("%s；无法将原始计划映射到完整ZIP分组或持久身份检查点，不能从选中路径重算目录身份，也不能从已入库列表反推", why)
+	}
+	mapped, err := mapPlanToIdentityCheckpoint(items, snaps)
+	if err != nil {
+		return nil, fmt.Errorf("%w；拒绝视为导入完成", err)
+	}
+	return mapped, nil
 }
 
 func plannedCheckpointTrusted(result dramaJobResult) ([]dramaJobPlanSnap, string) {
@@ -232,17 +450,17 @@ func plannedCheckpointTrusted(result dramaJobResult) ([]dramaJobPlanSnap, string
 	return out, ""
 }
 
-// obligationSnaps 只从原始计划、当前 ZIP 分组或自洽的持久检查点构造覆盖义务。
-// 绝不把已入库 result.List 当作计划本身。无法证明时 trusted=false。
+// obligationSnaps 覆盖义务以原始计划为准；目录身份只来自完整 ZIP 分组或持久身份检查点。
+// 绝不把已入库 result.List 当作计划本身，也不从选中子集重算 ItemKey。无法证明时 trusted=false。
 func obligationSnaps(job *dao.DramaImportJob, result dramaJobResult, groups []DramaZipGroup) ([]dramaJobPlanSnap, bool, string) {
 	var plan DramaImportPlan
 	if job != nil {
 		plan = parseDramaImportPlan(job.PlanJSON)
 	}
 	if len(plan.Items) > 0 {
-		snaps, err := planSnapsFromImportPlan(plan)
+		snaps, err := resolvePlanObligations(plan, groups, result)
 		if err != nil {
-			return nil, false, "原始导入计划无法核对其覆盖义务: " + err.Error()
+			return nil, false, "原始导入计划无法核对其覆盖义务或稳定目录身份: " + err.Error()
 		}
 		return snaps, true, ""
 	}

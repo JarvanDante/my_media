@@ -41,37 +41,37 @@ type DramaImportPlanEp struct {
 	Title string `json:"title"`
 }
 
-func (s *sAsset) importDramasFromPack(ctx context.Context, zipPath, zipName, planJSON string, lease dao.DramaJobLease, lim DramaImportLimits) (*v1.ImportDramasRes, error) {
+func (s *sAsset) importDramasFromPack(ctx context.Context, zipPath, zipName, planJSON string, lease dao.DramaJobLease, lim DramaImportLimits) (*v1.ImportDramasRes, []DramaZipGroup, error) {
 	if s.dramaBlobs() == nil {
-		return nil, gerror.NewCode(errcode.CodeBadRequest, "MinIO 未初始化")
+		return nil, nil, gerror.NewCode(errcode.CodeBadRequest, "MinIO 未初始化")
 	}
 	lim = lim.withDefaults()
 	if err := ctxImportCanceled(ctx); err != nil {
-		return nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
+		return nil, nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
 	}
 	st, err := os.Stat(zipPath)
 	if err != nil {
-		return nil, gerror.NewCode(errcode.CodeBadRequest, "无法读取压缩包")
+		return nil, nil, gerror.NewCode(errcode.CodeBadRequest, "无法读取压缩包")
 	}
 	if st.Size() > lim.MaxZipBytes {
-		return nil, gerror.NewCode(errcode.CodeBadRequest, fmt.Sprintf("压缩包大小 %s 超过上限 %s", humanBytes(st.Size()), humanBytes(lim.MaxZipBytes)))
+		return nil, nil, gerror.NewCode(errcode.CodeBadRequest, fmt.Sprintf("压缩包大小 %s 超过上限 %s", humanBytes(st.Size()), humanBytes(lim.MaxZipBytes)))
 	}
 	if err := ensureDiskFree(filepath.Dir(zipPath), lim.MinFreeBytes); err != nil {
-		return nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
+		return nil, nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
 	}
 
 	zr, err := zip.OpenReader(zipPath)
 	if err != nil {
-		return nil, gerror.NewCode(errcode.CodeBadRequest, "无法打开压缩包")
+		return nil, nil, gerror.NewCode(errcode.CodeBadRequest, "无法打开压缩包")
 	}
 	defer zr.Close()
 
 	metas, err := zipMetasFromReader(&zr.Reader)
 	if err != nil {
-		return nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
+		return nil, nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
 	}
 	if err := checkZipLimits(st.Size(), metas, lim); err != nil {
-		return nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
+		return nil, nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
 	}
 	var largest int64
 	for _, f := range metas {
@@ -83,32 +83,32 @@ func (s *sAsset) importDramasFromPack(ctx context.Context, zipPath, zipName, pla
 		}
 	}
 	if err := ensureDiskFree(filepath.Dir(zipPath), lim.MinFreeBytes+largest); err != nil {
-		return nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
+		return nil, nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
 	}
 
 	groups, err := GroupDramaZip(metas, zipName)
 	if err != nil {
-		return nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
+		return nil, nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
 	}
 	if planJSON != "" {
 		var raw DramaImportPlan
 		if err := json.Unmarshal([]byte(planJSON), &raw); err != nil {
-			return nil, gerror.NewCode(errcode.CodeBadRequest, "导入计划格式无效")
+			return nil, nil, gerror.NewCode(errcode.CodeBadRequest, "导入计划格式无效")
 		}
 		if len(raw.Items) > 0 {
 			groups, err = applyDramaPlan(groups, planJSON)
 			if err != nil {
-				return nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
+				return nil, nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
 			}
 		} else if tid := strings.TrimSpace(raw.TargetID); tid != "" {
 			if len(groups) != 1 {
-				return nil, gerror.NewCode(errcode.CodeBadRequest, "压缩包含多部短剧时，必须在计划中为各部指定续传目标，不能按标题混剧")
+				return nil, nil, gerror.NewCode(errcode.CodeBadRequest, "压缩包含多部短剧时，必须在计划中为各部指定续传目标，不能按标题混剧")
 			}
 			groups[0].TargetID = tid
 		}
 	}
 	if err := ensureUniqueDramaItemKeys(groups); err != nil {
-		return nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
+		return nil, nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
 	}
 
 	files := map[string]*zip.File{}
@@ -118,7 +118,7 @@ func (s *sAsset) importDramasFromPack(ctx context.Context, zipPath, zipName, pla
 			if shouldIgnoreZipName(f.Name) {
 				continue
 			}
-			return nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
+			return nil, nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
 		}
 		files[clean] = f
 	}
@@ -129,7 +129,7 @@ func (s *sAsset) importDramasFromPack(ctx context.Context, zipPath, zipName, pla
 	}
 	workDir, err := os.MkdirTemp(filepath.Dir(zipPath), "entry-")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer os.RemoveAll(workDir)
 
@@ -169,9 +169,9 @@ func (s *sAsset) importDramasFromPack(ctx context.Context, zipPath, zipName, pla
 		if len(res.Failed) > 0 {
 			msg = res.Failed[0].Error
 		}
-		return res, gerror.NewCode(errcode.CodeBadRequest, msg)
+		return res, groups, gerror.NewCode(errcode.CodeBadRequest, msg)
 	}
-	return res, nil
+	return res, groups, nil
 }
 
 func ensureUniqueDramaItemKeys(groups []DramaZipGroup) error {
