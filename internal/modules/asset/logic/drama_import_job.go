@@ -254,15 +254,18 @@ func (ops dramaLeaseOps) bounded(fn func(ctx context.Context) error) error {
 	return fn(ctx)
 }
 
-// runWithDramaJobLease 按最近一次成功续租设置本地失效deadline，不依赖卡住的 Renew 返回。
-// Renew/Release 调用有界；续租失败或本地到期立即取消 workCtx。
-func runWithDramaJobLease(parent context.Context, lease dao.DramaJobLease, ops dramaLeaseOps, work func(ctx context.Context) error) (leaseLost bool, err error) {
+// runWithDramaJobLease 本地失效 deadline 按认领/续租 RPC 开始时刻+TTL 保守计算，不可在收到成功响应后再 +TTL。
+// 延迟回包若已过保守期限则不启动或不续期；watchdog 与 Renew 并行，取消不依赖卡住的调用返回。
+func runWithDramaJobLease(parent context.Context, lease dao.DramaJobLease, ops dramaLeaseOps, startedAt time.Time, work func(ctx context.Context) error) (leaseLost bool, err error) {
 	ops.ensure()
+	if startedAt.IsZero() || !time.Now().Before(startedAt.Add(ops.TTL)) {
+		return true, dao.ErrDramaJobLeaseLost
+	}
 	workCtx, cancelWork := context.WithCancel(parent)
 	defer cancelWork()
 	var lost atomic.Bool
 	var deadline atomic.Int64
-	deadline.Store(time.Now().Add(ops.TTL).UnixNano())
+	deadline.Store(startedAt.Add(ops.TTL).UnixNano())
 
 	renewDone := make(chan struct{})
 	watchDone := make(chan struct{})
@@ -293,15 +296,20 @@ func runWithDramaJobLease(parent context.Context, lease dao.DramaJobLease, ops d
 			case <-workCtx.Done():
 				return
 			case <-t.C:
+				renewStart := time.Now()
 				rerr := ops.bounded(func(ctx context.Context) error {
 					return ops.Renew(ctx, lease, ops.TTL)
 				})
-				if rerr != nil {
+				conservative := renewStart.Add(ops.TTL)
+				if rerr != nil || !time.Now().Before(conservative) {
 					lost.Store(true)
 					cancelWork()
 					return
 				}
-				deadline.Store(time.Now().Add(ops.TTL).UnixNano())
+				if workCtx.Err() != nil {
+					return
+				}
+				deadline.Store(conservative.UnixNano())
 			}
 		}
 	}()
@@ -351,6 +359,7 @@ func (s *sAsset) tickDramaImport(ctx context.Context, owner string) error {
 		return err
 	}
 	lim := dramaImportLimits(ctx)
+	claimedAt := time.Now()
 	job, lease, err := dao.ClaimDramaImportJob(ctx, owner, dao.DefaultDramaJobLeaseTTL, lim.MaxRunningJobs)
 	if err != nil {
 		return err
@@ -358,7 +367,7 @@ func (s *sAsset) tickDramaImport(ctx context.Context, owner string) error {
 	if job == nil || lease == nil {
 		return nil
 	}
-	s.runDramaImportJob(ctx, job, *lease, lim)
+	s.runDramaImportJob(ctx, job, *lease, lim, claimedAt)
 	return nil
 }
 
@@ -402,7 +411,7 @@ func (s *sAsset) refreshImportDoneJobs(ctx context.Context) {
 	}
 }
 
-func (s *sAsset) runDramaImportJob(parent context.Context, job *dao.DramaImportJob, lease dao.DramaJobLease, lim DramaImportLimits) {
+func (s *sAsset) runDramaImportJob(parent context.Context, job *dao.DramaImportJob, lease dao.DramaJobLease, lim DramaImportLimits, claimedAt time.Time) {
 	timeout := time.Duration(lim.JobTimeoutSec) * time.Second
 	if timeout <= 0 {
 		timeout = time.Duration(defaultJobTimeoutSec) * time.Second
@@ -411,7 +420,7 @@ func (s *sAsset) runDramaImportJob(parent context.Context, job *dao.DramaImportJ
 	defer cancel()
 	ops := defaultDramaLeaseOps()
 
-	lost, err := runWithDramaJobLease(ctx, lease, ops, func(workCtx context.Context) error {
+	lost, err := runWithDramaJobLease(ctx, lease, ops, claimedAt, func(workCtx context.Context) error {
 		return s.execDramaImportJob(workCtx, job, lease, ops, lim)
 	})
 	if lost {

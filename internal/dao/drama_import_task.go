@@ -444,7 +444,61 @@ func leaseUntilSQL(ttl time.Duration) gdb.Raw {
 	if ms < 1 {
 		ms = 1
 	}
-	return gdb.Raw(fmt.Sprintf("now() + interval '%d milliseconds'", ms))
+	// 锁已持有后再计算期限，必须用 clock_timestamp：now() 固定在事务开始，锁等待后会把已过期租约续活。
+	return gdb.Raw(fmt.Sprintf("clock_timestamp() + interval '%d milliseconds'", ms))
+}
+
+func dbClock() gdb.Raw {
+	return gdb.Raw("clock_timestamp()")
+}
+
+func leaseOwnerWhere(m *gdb.Model, lease DramaJobLease) *gdb.Model {
+	return m.Where("id", lease.JobPK).
+		Where("owner", lease.Owner).
+		Where("lease_generation", lease.Generation).
+		Where("status", DramaJobRunning)
+}
+
+func leaseFreshWhere(m *gdb.Model) *gdb.Model {
+	return m.Where("lease_until IS NOT NULL").Where("lease_until > clock_timestamp()")
+}
+
+func leaseClaimableWhere(m *gdb.Model) *gdb.Model {
+	return m.Where("(status = ? OR (status = ? AND (lease_until IS NULL OR lease_until <= clock_timestamp())))", DramaJobQueued, DramaJobRunning)
+}
+
+// lockDramaJobRowForLease 先按 owner/generation/running 锁定任务行，不在锁前用时间资格过滤。
+func lockDramaJobRowForLease(ctx context.Context, tx gdb.TX, lease DramaJobLease) error {
+	if lease.JobPK <= 0 || strings.TrimSpace(lease.Owner) == "" || lease.Generation <= 0 {
+		return ErrDramaJobLeaseLost
+	}
+	row, err := leaseOwnerWhere(tx.Model("drama_import_job").Ctx(ctx), lease).Fields("id").LockUpdate().One()
+	if err != nil {
+		return err
+	}
+	if row.IsEmpty() {
+		return ErrDramaJobLeaseLost
+	}
+	return nil
+}
+
+// assertLockedLeaseFresh 须在任务行已锁定后调用，用实际当前 DB 时间重新验证期限。
+func assertLockedLeaseFresh(ctx context.Context, tx gdb.TX, lease DramaJobLease) error {
+	n, err := leaseFreshWhere(leaseOwnerWhere(tx.Model("drama_import_job").Ctx(ctx), lease)).Count()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrDramaJobLeaseLost
+	}
+	return nil
+}
+
+func lockAndAssertFreshLeaseTx(ctx context.Context, tx gdb.TX, lease DramaJobLease) error {
+	if err := lockDramaJobRowForLease(ctx, tx, lease); err != nil {
+		return err
+	}
+	return assertLockedLeaseFresh(ctx, tx, lease)
 }
 
 func CountRunningDramaJobs(ctx context.Context) (int, error) {
@@ -455,7 +509,7 @@ func countLeasedRunningJobs(db gdb.DB, ctx context.Context) (int, error) {
 	n, err := db.Model("drama_import_job").Ctx(ctx).
 		Where("status", DramaJobRunning).
 		Where("lease_until IS NOT NULL").
-		Where("lease_until > now()").
+		Where("lease_until > clock_timestamp()").
 		Count()
 	return n, err
 }
@@ -484,10 +538,11 @@ func claimDramaImportJobDB(db gdb.DB, ctx context.Context, owner string, leaseTT
 		if _, err := tx.Exec("SELECT pg_advisory_xact_lock(?)", dramaImportClaimLockKey); err != nil {
 			return err
 		}
+		// 咨询锁已取得后再用 clock_timestamp 统计与发 TTL；now() 会停在事务开始，锁等待后期限偏早甚至已过期。
 		n, err := tx.Model("drama_import_job").Ctx(ctx).
 			Where("status", DramaJobRunning).
 			Where("lease_until IS NOT NULL").
-			Where("lease_until > now()").
+			Where("lease_until > clock_timestamp()").
 			Count()
 		if err != nil {
 			return err
@@ -495,10 +550,8 @@ func claimDramaImportJobDB(db gdb.DB, ctx context.Context, owner string, leaseTT
 		if n >= maxRunning {
 			return nil
 		}
-		now := gtime.Now()
-		row, err := tx.Model("drama_import_job").Ctx(ctx).
-			Where("attempts < max_attempts").
-			Where("(status = ? OR (status = ? AND (lease_until IS NULL OR lease_until <= now())))", DramaJobQueued, DramaJobRunning).
+		row, err := leaseClaimableWhere(tx.Model("drama_import_job").Ctx(ctx).
+			Where("attempts < max_attempts")).
 			OrderAsc("id").
 			LockUpdate().
 			Limit(1).
@@ -510,16 +563,27 @@ func claimDramaImportJobDB(db gdb.DB, ctx context.Context, owner string, leaseTT
 			return nil
 		}
 		j := mapDramaJob(row.Map())
-		started := now
+		// 行锁后再以实际当前 DB 时间确认仍可认领，避免锁前资格在等待期间失效或被续租。
+		fresh, err := leaseClaimableWhere(tx.Model("drama_import_job").Ctx(ctx).
+			Where("id", j.Pk).
+			Where("lease_generation", j.LeaseGeneration).
+			Where("attempts < max_attempts")).
+			Count()
+		if err != nil {
+			return err
+		}
+		if fresh == 0 {
+			return nil
+		}
+		started := gtime.Now()
 		if j.StartedAt != nil {
 			started = gtime.NewFromTime(*j.StartedAt)
 		}
 		nextGen := j.LeaseGeneration + 1
-		r, err := tx.Model("drama_import_job").Ctx(ctx).
+		r, err := leaseClaimableWhere(tx.Model("drama_import_job").Ctx(ctx).
 			Where("id", j.Pk).
 			Where("lease_generation", j.LeaseGeneration).
-			Where("attempts < max_attempts").
-			Where("(status = ? OR (status = ? AND (lease_until IS NULL OR lease_until <= now())))", DramaJobQueued, DramaJobRunning).
+			Where("attempts < max_attempts")).
 			Data(g.Map{
 				"status":           DramaJobRunning,
 				"stage":            "running",
@@ -527,9 +591,9 @@ func claimDramaImportJobDB(db gdb.DB, ctx context.Context, owner string, leaseTT
 				"owner":            owner,
 				"lease_generation": nextGen,
 				"lease_until":      leaseUntilSQL(leaseTTL),
-				"heartbeat_at":     gdb.Raw("now()"),
+				"heartbeat_at":     dbClock(),
 				"started_at":       started,
-				"updated_at":       gdb.Raw("now()"),
+				"updated_at":       dbClock(),
 				"finished_at":      nil,
 				"error":            "",
 			}).Update()
@@ -547,7 +611,7 @@ func claimDramaImportJobDB(db gdb.DB, ctx context.Context, owner string, leaseTT
 		j.LeaseGeneration = nextGen
 		approx := time.Now().Add(leaseTTL)
 		j.LeaseUntil = &approx
-		ht := now.Time
+		ht := time.Now()
 		j.HeartbeatAt = &ht
 		if j.StartedAt == nil {
 			j.StartedAt = &ht
@@ -560,12 +624,8 @@ func claimDramaImportJobDB(db gdb.DB, ctx context.Context, owner string, leaseTT
 }
 
 func leaseFenceWhere(m *gdb.Model, lease DramaJobLease) *gdb.Model {
-	return m.Where("id", lease.JobPK).
-		Where("owner", lease.Owner).
-		Where("lease_generation", lease.Generation).
-		Where("status", DramaJobRunning).
-		Where("lease_until IS NOT NULL").
-		Where("lease_until > now()")
+	// 仅作锁后身份条件；期限必须在持锁后用 assertLockedLeaseFresh / clock_timestamp 另验。
+	return leaseOwnerWhere(m, lease)
 }
 
 func rowsOrLeaseLost(r sqlResult, err error) error {
@@ -591,12 +651,17 @@ func renewDramaImportJobLeaseDB(db gdb.DB, ctx context.Context, lease DramaJobLe
 	if ttl <= 0 {
 		ttl = DefaultDramaJobLeaseTTL
 	}
-	r, err := leaseFenceWhere(db.Model("drama_import_job").Ctx(ctx), lease).Data(g.Map{
-		"lease_until":  leaseUntilSQL(ttl),
-		"heartbeat_at": gdb.Raw("now()"),
-		"updated_at":   gdb.Raw("now()"),
-	}).Update()
-	return rowsOrLeaseLost(r, err)
+	return db.Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
+		if err := lockAndAssertFreshLeaseTx(ctx, tx, lease); err != nil {
+			return err
+		}
+		r, err := leaseOwnerWhere(tx.Model("drama_import_job").Ctx(ctx), lease).Data(g.Map{
+			"lease_until":  leaseUntilSQL(ttl),
+			"heartbeat_at": dbClock(),
+			"updated_at":   dbClock(),
+		}).Update()
+		return rowsOrLeaseLost(r, err)
+	})
 }
 
 func HeartbeatDramaImportJob(ctx context.Context, lease DramaJobLease, stage string, progress int, message string) error {
@@ -615,8 +680,8 @@ func heartbeatDramaImportJobDB(db gdb.DB, ctx context.Context, lease DramaJobLea
 	}
 	data := g.Map{
 		"lease_until":  leaseUntilSQL(ttl),
-		"heartbeat_at": gdb.Raw("now()"),
-		"updated_at":   gdb.Raw("now()"),
+		"heartbeat_at": dbClock(),
+		"updated_at":   dbClock(),
 		"progress":     progress,
 	}
 	if strings.TrimSpace(stage) != "" {
@@ -625,8 +690,13 @@ func heartbeatDramaImportJobDB(db gdb.DB, ctx context.Context, lease DramaJobLea
 	if message != "" {
 		data["message"] = message
 	}
-	r, err := leaseFenceWhere(db.Model("drama_import_job").Ctx(ctx), lease).Data(data).Update()
-	return rowsOrLeaseLost(r, err)
+	return db.Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
+		if err := lockAndAssertFreshLeaseTx(ctx, tx, lease); err != nil {
+			return err
+		}
+		r, err := leaseOwnerWhere(tx.Model("drama_import_job").Ctx(ctx), lease).Data(data).Update()
+		return rowsOrLeaseLost(r, err)
+	})
 }
 
 func FinishDramaImportJob(ctx context.Context, lease DramaJobLease, status, stage, message, errMsg, resultJSON string, progress int) error {
@@ -640,21 +710,26 @@ func finishDramaImportJobDB(db gdb.DB, ctx context.Context, lease DramaJobLease,
 	if progress > 100 {
 		progress = 100
 	}
-	r, err := leaseFenceWhere(db.Model("drama_import_job").Ctx(ctx), lease).Data(g.Map{
-		"status":           status,
-		"stage":            stage,
-		"message":          message,
-		"error":            errMsg,
-		"result_json":      resultJSON,
-		"progress":         progress,
-		"finished_at":      gdb.Raw("now()"),
-		"updated_at":       gdb.Raw("now()"),
-		"heartbeat_at":     gdb.Raw("now()"),
-		"owner":            "",
-		"lease_generation": gdb.Raw("lease_generation + 1"),
-		"lease_until":      nil,
-	}).Update()
-	return rowsOrLeaseLost(r, err)
+	return db.Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
+		if err := lockAndAssertFreshLeaseTx(ctx, tx, lease); err != nil {
+			return err
+		}
+		r, err := leaseOwnerWhere(tx.Model("drama_import_job").Ctx(ctx), lease).Data(g.Map{
+			"status":           status,
+			"stage":            stage,
+			"message":          message,
+			"error":            errMsg,
+			"result_json":      resultJSON,
+			"progress":         progress,
+			"finished_at":      dbClock(),
+			"updated_at":       dbClock(),
+			"heartbeat_at":     dbClock(),
+			"owner":            "",
+			"lease_generation": gdb.Raw("lease_generation + 1"),
+			"lease_until":      nil,
+		}).Update()
+		return rowsOrLeaseLost(r, err)
+	})
 }
 
 func ReleaseDramaImportJobLease(ctx context.Context, lease DramaJobLease) error {
@@ -663,25 +738,23 @@ func ReleaseDramaImportJobLease(ctx context.Context, lease DramaJobLease) error 
 
 func releaseDramaImportJobLeaseDB(db gdb.DB, ctx context.Context, lease DramaJobLease) error {
 	// 使 (owner, generation) 立即失效，并清空到期时间；回收条件仍是无有效租约。
-	r, err := leaseFenceWhere(db.Model("drama_import_job").Ctx(ctx), lease).Data(g.Map{
-		"owner":            "",
-		"lease_generation": gdb.Raw("lease_generation + 1"),
-		"lease_until":      nil,
-		"heartbeat_at":     gdb.Raw("now()"),
-		"updated_at":       gdb.Raw("now()"),
-	}).Update()
-	return rowsOrLeaseLost(r, err)
+	return db.Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
+		if err := lockAndAssertFreshLeaseTx(ctx, tx, lease); err != nil {
+			return err
+		}
+		r, err := leaseOwnerWhere(tx.Model("drama_import_job").Ctx(ctx), lease).Data(g.Map{
+			"owner":            "",
+			"lease_generation": gdb.Raw("lease_generation + 1"),
+			"lease_until":      nil,
+			"heartbeat_at":     dbClock(),
+			"updated_at":       dbClock(),
+		}).Update()
+		return rowsOrLeaseLost(r, err)
+	})
 }
 
 func assertDramaJobLeaseTx(ctx context.Context, tx gdb.TX, lease DramaJobLease) error {
-	row, err := leaseFenceWhere(tx.Model("drama_import_job").Ctx(ctx), lease).Fields("id").LockUpdate().One()
-	if err != nil {
-		return err
-	}
-	if row.IsEmpty() {
-		return ErrDramaJobLeaseLost
-	}
-	return nil
+	return lockAndAssertFreshLeaseTx(ctx, tx, lease)
 }
 
 // AssertDramaJobLease 短事务校验租约仍有效（不含业务写入）。
