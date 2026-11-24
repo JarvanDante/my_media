@@ -119,15 +119,15 @@ func (s *sAsset) RetryDramaImportJob(ctx context.Context, id string) (*v1.DramaI
 		result := parseDramaJobResult(job.ResultJSON)
 		assess := s.assessDramaImport(ctx, job, result, nil)
 		if !assess.ImportComplete {
-			if s.dramaBlobs() == nil || job.PackKey == "" || s.dramaBlobs().Stat(ctx, job.Bucket, job.PackKey) != nil {
-				return nil, gerror.NewCode(errcode.CodeBadRequest, "入库未完成且整包已不可用，无法补齐失败项，请重新上传")
-			}
-			if err := s.requeueImportJob(ctx, job.Pk); err != nil {
+			if err := s.requeueIncompleteImportDoneIfPackReady(ctx, job); err != nil {
 				return nil, err
 			}
 			job, err = s.getImportJobByCode(ctx, id)
 			if err != nil {
 				return nil, err
+			}
+			if job == nil || job.Status != dao.DramaJobQueued {
+				return nil, gerror.NewCode(errcode.CodeBadRequest, "任务未能转入重试排队，请刷新后重试")
 			}
 			return s.dramaImportJobRes(ctx, job)
 		}
@@ -140,18 +140,15 @@ func (s *sAsset) RetryDramaImportJob(ctx context.Context, id string) (*v1.DramaI
 		}
 		return s.dramaImportJobRes(ctx, job)
 	case dao.DramaJobFailed, dao.DramaJobCanceled:
-		if job.PackKey == "" || s.dramaBlobs() == nil {
-			return nil, gerror.NewCode(errcode.CodeBadRequest, "整包已不可用，请重新上传")
-		}
-		if err := s.dramaBlobs().Stat(ctx, job.Bucket, job.PackKey); err != nil {
-			return nil, gerror.NewCode(errcode.CodeBadRequest, "整包已不可用，请重新上传")
-		}
-		if err := s.requeueImportJob(ctx, job.Pk); err != nil {
+		if err := s.requeueFailedOrCanceledIfPackReady(ctx, job); err != nil {
 			return nil, err
 		}
 		job, err = s.getImportJobByCode(ctx, id)
 		if err != nil {
 			return nil, err
+		}
+		if job == nil || job.Status != dao.DramaJobQueued {
+			return nil, gerror.NewCode(errcode.CodeBadRequest, "任务未能转入重试排队，请刷新后重试")
 		}
 		return s.dramaImportJobRes(ctx, job)
 	default:

@@ -4,11 +4,15 @@ import (
 	"archive/zip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
 
+	"github.com/gogf/gf/v2/errors/gerror"
 	"github.com/gogf/gf/v2/frame/g"
+
+	"github.com/JarvanDante/my_media/internal/shared/errcode"
 
 	v1 "github.com/JarvanDante/my_media/api/admin/asset/v1"
 	"github.com/JarvanDante/my_media/internal/consts"
@@ -95,48 +99,190 @@ type dramaImportAssessment struct {
 	Reason         string
 }
 
-func snapForAssessment(result dramaJobResult, planJSON string, groups []DramaZipGroup) []dramaJobPlanSnap {
-	if len(result.Planned) > 0 {
-		return result.Planned
+func uniquePositiveSeqs(seqs []int) ([]int, bool) {
+	seen := map[int]bool{}
+	out := make([]int, 0, len(seqs))
+	for _, seq := range seqs {
+		if seq < 1 {
+			return nil, false
+		}
+		if seen[seq] {
+			return nil, false
+		}
+		seen[seq] = true
+		out = append(out, seq)
+	}
+	return out, true
+}
+
+func planSnapsFromImportPlan(plan DramaImportPlan) ([]dramaJobPlanSnap, error) {
+	if len(plan.Items) == 0 {
+		return nil, fmt.Errorf("导入计划没有项目")
+	}
+	type rawItem struct {
+		item  DramaImportPlanItem
+		paths []string
+	}
+	var raws []rawItem
+	var allPaths []string
+	for i, it := range plan.Items {
+		var paths []string
+		for _, ep := range it.Episodes {
+			if ep.Path == "" {
+				continue
+			}
+			p, err := sanitizeZipEntryName(ep.Path)
+			if err != nil {
+				return nil, fmt.Errorf("计划第%d项剧集路径无效: %w", i+1, err)
+			}
+			paths = append(paths, p)
+		}
+		if it.Cover != "" {
+			c, err := sanitizeZipEntryName(it.Cover)
+			if err != nil {
+				return nil, fmt.Errorf("计划第%d项封面路径无效: %w", i+1, err)
+			}
+			paths = append(paths, c)
+		}
+		if len(paths) == 0 {
+			return nil, fmt.Errorf("计划第%d项缺少可用于确定目录身份的路径", i+1)
+		}
+		raws = append(raws, rawItem{item: it, paths: paths})
+		allPaths = append(allPaths, paths...)
+	}
+	parent := commonPackParent(allPaths)
+	seen := map[string]int{}
+	out := make([]dramaJobPlanSnap, 0, len(raws))
+	for i, r := range raws {
+		keyPath := r.paths[0]
+		for _, ep := range r.item.Episodes {
+			if ep.Path == "" {
+				continue
+			}
+			if p, err := sanitizeZipEntryName(ep.Path); err == nil {
+				keyPath = p
+				break
+			}
+		}
+		key, _ := dramaGroupKey(keyPath, parent, "pack.zip")
+		itemKey, err := dao.NormalizeDramaImportItemKey(key)
+		if err != nil {
+			return nil, fmt.Errorf("计划第%d项目录身份无效: %w", i+1, err)
+		}
+		if prev, ok := seen[itemKey]; ok {
+			return nil, fmt.Errorf("计划第%d项与第%d项目录身份 %q 冲突，拒绝合并覆盖义务", i+1, prev+1, itemKey)
+		}
+		seen[itemKey] = i
+		var seqs []int
+		for _, ep := range r.item.Episodes {
+			seqs = append(seqs, ep.Seq)
+		}
+		uniq, ok := uniquePositiveSeqs(seqs)
+		if !ok || len(uniq) == 0 {
+			return nil, fmt.Errorf("计划第%d项集号缺失、无效或重复，无法确定覆盖义务", i+1)
+		}
+		out = append(out, dramaJobPlanSnap{
+			ItemKey: itemKey,
+			Title:   r.item.Title,
+			Cover:   r.item.Cover != "",
+			Seqs:    uniq,
+		})
+	}
+	return out, nil
+}
+
+func plannedCheckpointTrusted(result dramaJobResult) ([]dramaJobPlanSnap, string) {
+	if len(result.Planned) == 0 {
+		return nil, "缺少持久计划检查点"
+	}
+	if result.PlannedCount > 0 && result.PlannedCount != len(result.Planned) {
+		return nil, fmt.Sprintf("检查点项目数不一致：PlannedCount=%d，Planned=%d，拒绝从部分检查点推断完整性", result.PlannedCount, len(result.Planned))
+	}
+	seen := map[string]bool{}
+	out := make([]dramaJobPlanSnap, 0, len(result.Planned))
+	for i, snap := range result.Planned {
+		key := strings.TrimSpace(snap.ItemKey)
+		if key == "" {
+			// item key 不得用 TrimSpace 当身份；这里只判断是否空。空键不可信。
+			if snap.ItemKey == "" {
+				return nil, fmt.Sprintf("检查点第%d项缺少稳定目录身份", i+1)
+			}
+			key = snap.ItemKey
+		} else if key != snap.ItemKey {
+			// 含首尾空白的 key 仍是合法身份，保留原值。
+			key = snap.ItemKey
+		}
+		norm, err := dao.NormalizeDramaImportItemKey(snap.ItemKey)
+		if err != nil {
+			return nil, fmt.Sprintf("检查点第%d项目录身份无效", i+1)
+		}
+		if seen[norm] {
+			return nil, fmt.Sprintf("检查点目录身份 %q 重复，拒绝推断完整性", norm)
+		}
+		seen[norm] = true
+		uniq, ok := uniquePositiveSeqs(snap.Seqs)
+		if !ok || len(uniq) == 0 {
+			return nil, fmt.Sprintf("检查点第%d项缺少完整集号覆盖义务", i+1)
+		}
+		cp := snap
+		cp.ItemKey = norm
+		cp.Seqs = uniq
+		out = append(out, cp)
+	}
+	return out, ""
+}
+
+// obligationSnaps 只从原始计划、当前 ZIP 分组或自洽的持久检查点构造覆盖义务。
+// 绝不把已入库 result.List 当作计划本身。无法证明时 trusted=false。
+func obligationSnaps(job *dao.DramaImportJob, result dramaJobResult, groups []DramaZipGroup) ([]dramaJobPlanSnap, bool, string) {
+	var plan DramaImportPlan
+	if job != nil {
+		plan = parseDramaImportPlan(job.PlanJSON)
+	}
+	if len(plan.Items) > 0 {
+		snaps, err := planSnapsFromImportPlan(plan)
+		if err != nil {
+			return nil, false, "原始导入计划无法核对其覆盖义务: " + err.Error()
+		}
+		return snaps, true, ""
 	}
 	if len(groups) > 0 {
-		return planSnapsFromGroups(groups)
-	}
-	// 旧任务没有检查点：用结果列表项占位，计划项多出的只能记为缺失。
-	out := make([]dramaJobPlanSnap, 0, len(result.List))
-	for _, it := range result.List {
-		out = append(out, dramaJobPlanSnap{ItemKey: it.ItemKey, Title: it.Title})
-	}
-	plan := parseDramaImportPlan(planJSON)
-	if len(plan.Items) > len(out) {
-		for i := len(out); i < len(plan.Items); i++ {
-			out = append(out, dramaJobPlanSnap{Title: plan.Items[i].Title, Cover: strings.TrimSpace(plan.Items[i].Cover) != ""})
+		snaps, why := plannedCheckpointTrusted(dramaJobResult{Planned: planSnapsFromGroups(groups), PlannedCount: len(groups)})
+		if why != "" {
+			return nil, false, "当前压缩包分组无法形成完整覆盖义务: " + why
 		}
+		return snaps, true, ""
 	}
-	return out
+	if snaps, why := plannedCheckpointTrusted(result); why == "" {
+		return snaps, true, ""
+	} else {
+		return nil, false, why + "；缺少原始计划或完整检查点时，不能从已入库列表反推完整性"
+	}
 }
 
 func (s *sAsset) assessDramaImport(ctx context.Context, job *dao.DramaImportJob, result dramaJobResult, groups []DramaZipGroup) dramaImportAssessment {
 	a := dramaImportAssessment{}
-	snaps := snapForAssessment(result, "", groups)
-	if job != nil {
-		snaps = snapForAssessment(result, job.PlanJSON, groups)
-	}
+	snaps, trusted, why := obligationSnaps(job, result, groups)
 	a.Planned = len(snaps)
-	if a.Planned == 0 && len(result.List) == 0 {
-		a.Reason = "没有可核对的导入计划项"
+	if !trusted {
+		a.Reason = why
+		if a.Reason == "" {
+			a.Reason = "缺少完整可信的导入检查点，不能证明计划已全部覆盖，拒绝视为导入完成"
+		}
 		a.FailedCount = result.FailedCount
+		if a.FailedCount < 1 {
+			a.FailedCount = 1
+		}
+		a.ImportComplete = false
 		return a
 	}
 
 	listByKey := map[string]v1.ImportDramasItem{}
-	listByID := map[string]v1.ImportDramasItem{}
 	for _, it := range result.List {
 		if it.ItemKey != "" {
-			listByKey[it.ItemKey] = it
-		}
-		if it.Id != "" {
-			listByID[it.Id] = it
+			if k, err := dao.NormalizeDramaImportItemKey(it.ItemKey); err == nil {
+				listByKey[k] = it
+			}
 		}
 	}
 	bindings := map[string]string{}
@@ -151,9 +297,7 @@ func (s *sAsset) assessDramaImport(ctx context.Context, job *dao.DramaImportJob,
 	for _, snap := range snaps {
 		fail := func(msg string) {
 			a.FailedCount++
-			key := snap.ItemKey
-			a.Missing = append(a.Missing, v1.ImportDramasFail{Title: snap.Title, Error: msg, ItemKey: key})
-			a.EpisodeTotal += len(snap.Seqs)
+			a.Missing = append(a.Missing, v1.ImportDramasFail{Title: snap.Title, Error: msg, ItemKey: snap.ItemKey})
 		}
 		code := ""
 		if snap.ItemKey != "" {
@@ -164,34 +308,40 @@ func (s *sAsset) assessDramaImport(ctx context.Context, job *dao.DramaImportJob,
 				code = bindings[snap.ItemKey]
 			}
 		}
-		if code == "" && snap.ItemKey == "" {
-			// 旧任务无 item_key：若计划项多于列表，多出的已在 snap 中无 id。
-			for _, it := range result.List {
-				if it.Title == snap.Title && listByID[it.Id].Id != "" {
-					code = it.Id
-					delete(listByID, it.Id)
-					break
-				}
-			}
-		}
+		// 只按稳定目录身份映射，不用标题从 List 反推。
 		if code == "" {
 			fail("未入库或导入失败")
+			for range snap.Seqs {
+				a.EpisodeTotal++
+			}
 			continue
 		}
 		series, err := s.repo.GetByCode(ctx, code)
 		if err != nil || series == nil || !consts.IsDramaSeries(series.Kind, series.ParentId) {
 			fail("已绑定的短剧不存在或已被删除")
+			a.EpisodeTotal += len(snap.Seqs)
 			continue
 		}
 		eps, err := s.repo.ListEpisodes(ctx, series.Pk)
 		if err != nil {
 			fail("读取剧集失败: " + err.Error())
+			a.EpisodeTotal += len(snap.Seqs)
 			continue
 		}
 		bySeq := map[int]domain.Asset{}
 		for _, ep := range eps {
 			bySeq[ep.Seq] = ep
+		}
+		itemOK := true
+		var reasons []string
+		for _, seq := range snap.Seqs {
 			a.EpisodeTotal++
+			ep, ok := bySeq[seq]
+			if !ok {
+				itemOK = false
+				reasons = append(reasons, fmt.Sprintf("缺第%d集", seq))
+				continue
+			}
 			switch ep.Status {
 			case consts.AssetStatusReady:
 				a.EpisodeReady++
@@ -199,23 +349,6 @@ func (s *sAsset) assessDramaImport(ctx context.Context, job *dao.DramaImportJob,
 				a.EpisodeProc++
 			case consts.AssetStatusFailed:
 				a.EpisodeFail++
-			}
-		}
-		// 计划集数未入库的计入总数且不算就绪。
-		for _, seq := range snap.Seqs {
-			if _, ok := bySeq[seq]; ok {
-				continue
-			}
-			a.EpisodeTotal++
-		}
-		itemOK := true
-		var reasons []string
-		for _, seq := range snap.Seqs {
-			ep, ok := bySeq[seq]
-			if !ok {
-				itemOK = false
-				reasons = append(reasons, fmt.Sprintf("缺第%d集", seq))
-				continue
 			}
 			if episodeImportSatisfied(ep) {
 				continue
@@ -234,18 +367,54 @@ func (s *sAsset) assessDramaImport(ctx context.Context, job *dao.DramaImportJob,
 		a.Imported++
 	}
 
-	// 转码投递失败等：结果 Failed 里可能还有完整项的告警，不把它算成导入未完成，但要保留失败数展示。
 	importFail := a.FailedCount
-	if result.FailedCount > importFail {
+	if result.FailedCount > a.FailedCount {
 		a.FailedCount = result.FailedCount
 	}
+
+	transcodeWarned := 0
+	for _, f := range result.Failed {
+		key := f.ItemKey
+		if key != "" {
+			if k, err := dao.NormalizeDramaImportItemKey(key); err == nil {
+				key = k
+			}
+		}
+		complete := false
+		if key != "" {
+			for _, snap := range snaps {
+				if snap.ItemKey == key {
+					// 该项已计入 Imported 则视为入库完成仅转码告警
+					// 通过再扫 Missing 判断
+					hitMissing := false
+					for _, m := range a.Missing {
+						mk := m.ItemKey
+						if mk != "" {
+							if k, err := dao.NormalizeDramaImportItemKey(mk); err == nil {
+								mk = k
+							}
+						}
+						if mk == key {
+							hitMissing = true
+							break
+						}
+					}
+					complete = !hitMissing && a.Imported > 0
+					break
+				}
+			}
+		}
+		if complete {
+			transcodeWarned++
+		}
+	}
 	if importFail == 0 && a.Imported == a.Planned && a.Planned > 0 {
-		a.ImportComplete = true
-	} else if importFail == 0 && a.Planned == 0 && len(result.List) > 0 && result.FailedCount == 0 {
-		// 历史无计划快照且无失败记录：仅能按已列项视为导入完成（不能证明计划被全部覆盖）。
-		a.ImportComplete = true
-		a.Imported = len(result.List)
-		a.Reason = "历史任务无绑定检查点，仅按已入库列表判断；不能证明原计划已全部覆盖"
+		if result.FailedCount > transcodeWarned && result.FailedCount > 0 {
+			a.ImportComplete = false
+			a.Reason = "结果失败数与已证明的计划覆盖义务矛盾，拒绝视为导入完成"
+		} else {
+			a.ImportComplete = true
+		}
 	}
 	if !a.ImportComplete && a.Reason == "" {
 		a.Reason = fmt.Sprintf("导入未完成：计划 %d 项，已完整入库 %d 项，未完成 %d 项", a.Planned, a.Imported, importFail)
@@ -307,6 +476,60 @@ func (s *sAsset) requeueImportJob(ctx context.Context, id int64) error {
 		return dao.RequeueDramaImportJobOnDB(s.jobDB, ctx, id)
 	}
 	return dao.RequeueDramaImportJob(ctx, id)
+}
+
+func (s *sAsset) requeueIncompleteImportDone(ctx context.Context, id int64) error {
+	if s != nil && s.jobDB != nil {
+		return dao.RequeueIncompleteImportDoneJobOnDB(s.jobDB, ctx, id)
+	}
+	return dao.RequeueIncompleteImportDoneJob(ctx, id)
+}
+
+func (s *sAsset) packReadyForRequeue(ctx context.Context, job *dao.DramaImportJob) error {
+	if job == nil || job.PackKey == "" || s.dramaBlobs() == nil {
+		return gerror.NewCode(errcode.CodeBadRequest, "整包已不可用，请重新上传")
+	}
+	if err := s.dramaBlobs().Stat(ctx, job.Bucket, job.PackKey); err != nil {
+		return gerror.NewCode(errcode.CodeBadRequest, "整包已不可用，请重新上传")
+	}
+	return nil
+}
+
+func mapRequeueErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, dao.ErrDramaImportJobNotRequeued) {
+		return gerror.NewCode(errcode.CodeBadRequest, "任务状态已变化，未能转入重试排队，请刷新后重试")
+	}
+	return err
+}
+
+func (s *sAsset) requeueIncompleteImportDoneIfPackReady(ctx context.Context, job *dao.DramaImportJob) error {
+	if err := s.packReadyForRequeue(ctx, job); err != nil {
+		return gerror.NewCode(errcode.CodeBadRequest, "入库未完成且整包已不可用，无法补齐失败项，请重新上传")
+	}
+	if err := s.requeueIncompleteImportDone(ctx, job.Pk); err != nil {
+		return mapRequeueErr(err)
+	}
+	// 快照后、转入排队后源被删：不把仍成功排队的结果交给调用方。
+	if err := s.packReadyForRequeue(ctx, job); err != nil {
+		return gerror.NewCode(errcode.CodeBadRequest, "任务在转入重试排队后整包已不可用，请重新上传，不要当作已成功排队")
+	}
+	return nil
+}
+
+func (s *sAsset) requeueFailedOrCanceledIfPackReady(ctx context.Context, job *dao.DramaImportJob) error {
+	if err := s.packReadyForRequeue(ctx, job); err != nil {
+		return err
+	}
+	if err := s.requeueImportJob(ctx, job.Pk); err != nil {
+		return mapRequeueErr(err)
+	}
+	if err := s.packReadyForRequeue(ctx, job); err != nil {
+		return gerror.NewCode(errcode.CodeBadRequest, "任务在转入重试排队后整包已不可用，请重新上传，不要当作已成功排队")
+	}
+	return nil
 }
 
 func (s *sAsset) countEpisodes(ctx context.Context, parentPK int64) (dao.EpisodeStatusCount, error) {

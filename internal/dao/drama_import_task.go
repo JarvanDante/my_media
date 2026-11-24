@@ -826,10 +826,18 @@ func CancelQueuedDramaImportJob(ctx context.Context, id int64, message string) e
 	return err
 }
 
-func RequeueDramaImportJob(ctx context.Context, id int64) error {
-	_, err := g.DB().Model("drama_import_job").Ctx(ctx).
+var ErrDramaImportJobNotRequeued = errors.New("任务状态已变化，未能转入重试排队")
+
+func requeueDramaImportJobIfStatus(db gdb.DB, ctx context.Context, id int64, from []string) error {
+	if id <= 0 {
+		return errors.New("缺少导入任务")
+	}
+	if len(from) == 0 {
+		return errors.New("缺少可重排队的状态")
+	}
+	r, err := db.Model("drama_import_job").Ctx(ctx).
 		Where("id", id).
-		WhereIn("status", []string{DramaJobFailed, DramaJobCanceled}).
+		WhereIn("status", from).
 		Data(g.Map{
 			"status":      DramaJobQueued,
 			"stage":       "queued",
@@ -840,7 +848,26 @@ func RequeueDramaImportJob(ctx context.Context, id int64) error {
 			"owner":       "",
 			"lease_until": nil,
 		}).Update()
-	return err
+	if err != nil {
+		return err
+	}
+	n, err := r.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrDramaImportJobNotRequeued
+	}
+	return nil
+}
+
+func RequeueDramaImportJob(ctx context.Context, id int64) error {
+	return requeueDramaImportJobIfStatus(g.DB(), ctx, id, []string{DramaJobFailed, DramaJobCanceled})
+}
+
+// RequeueIncompleteImportDoneJob 仅将「入库未完成」的 import_done 转入排队，不放宽通用 failed/canceled 过滤。
+func RequeueIncompleteImportDoneJob(ctx context.Context, id int64) error {
+	return requeueDramaImportJobIfStatus(g.DB(), ctx, id, []string{DramaJobImportDone})
 }
 
 func UpdateDramaImportJobResult(ctx context.Context, id int64, status, stage, message, resultJSON string, progress int) error {
@@ -1109,20 +1136,11 @@ func UpdateDramaImportJobResultOnDB(db gdb.DB, ctx context.Context, id int64, st
 }
 
 func RequeueDramaImportJobOnDB(db gdb.DB, ctx context.Context, id int64) error {
-	_, err := db.Model("drama_import_job").Ctx(ctx).
-		Where("id", id).
-		WhereIn("status", []string{DramaJobFailed, DramaJobCanceled}).
-		Data(g.Map{
-			"status":      DramaJobQueued,
-			"stage":       "queued",
-			"error":       "",
-			"attempts":    0,
-			"finished_at": nil,
-			"updated_at":  gtime.Now(),
-			"owner":       "",
-			"lease_until": nil,
-		}).Update()
-	return err
+	return requeueDramaImportJobIfStatus(db, ctx, id, []string{DramaJobFailed, DramaJobCanceled})
+}
+
+func RequeueIncompleteImportDoneJobOnDB(db gdb.DB, ctx context.Context, id int64) error {
+	return requeueDramaImportJobIfStatus(db, ctx, id, []string{DramaJobImportDone})
 }
 
 func ListImportDoneDramaJobsOnDB(db gdb.DB, ctx context.Context, limit int) ([]DramaImportJob, error) {
