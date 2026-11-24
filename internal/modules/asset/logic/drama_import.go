@@ -107,6 +107,9 @@ func (s *sAsset) importDramasFromPack(ctx context.Context, zipPath, zipName, pla
 			groups[0].TargetID = tid
 		}
 	}
+	if err := ensureUniqueDramaItemKeys(groups); err != nil {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
+	}
 
 	files := map[string]*zip.File{}
 	for _, f := range zr.File {
@@ -157,6 +160,21 @@ func (s *sAsset) importDramasFromPack(ctx context.Context, zipPath, zipName, pla
 		return nil, gerror.NewCode(errcode.CodeBadRequest, msg)
 	}
 	return res, nil
+}
+
+func ensureUniqueDramaItemKeys(groups []DramaZipGroup) error {
+	seen := map[string]string{}
+	for _, g := range groups {
+		key, err := dao.NormalizeDramaImportItemKey(g.ItemKey)
+		if err != nil {
+			return err
+		}
+		if prev, ok := seen[key]; ok {
+			return fmt.Errorf("压缩包目录 %q 与 %q 规范化后冲突，拒绝合并导入", prev, g.ItemKey)
+		}
+		seen[key] = g.ItemKey
+	}
+	return nil
 }
 
 func applyDramaPlan(groups []DramaZipGroup, planJSON string) ([]DramaZipGroup, error) {

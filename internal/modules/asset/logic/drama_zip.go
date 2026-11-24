@@ -12,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"unicode"
+
+	"github.com/JarvanDante/my_media/internal/dao"
 )
 
 // HTTP 入口（分片代传、兼容整包 POST）仍受公网 Cloudflare 约 100MB 单请求限制。
@@ -374,10 +376,19 @@ func GroupDramaZip(files []zipMeta, zipBase string) ([]DramaZipGroup, error) {
 	}
 
 	var groups []DramaZipGroup
+	seenItemKey := map[string]string{}
 	for _, key := range order {
 		items := buckets[key]
 		title := groupTitle(key, zipBase)
-		g := DramaZipGroup{Title: title, ItemKey: key}
+		itemKey, err := dao.NormalizeDramaImportItemKey(key)
+		if err != nil {
+			return nil, err
+		}
+		if prev, ok := seenItemKey[itemKey]; ok {
+			return nil, fmt.Errorf("压缩包目录 %q 与 %q 规范化后冲突，拒绝合并导入", prev, key)
+		}
+		seenItemKey[itemKey] = key
+		g := DramaZipGroup{Title: title, ItemKey: itemKey}
 		for _, it := range items {
 			df := dramaFile{Path: it.Path, Name: path.Base(it.Path), Size: it.Size}
 			if videoExt[it.Ext] {

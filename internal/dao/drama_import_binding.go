@@ -24,18 +24,33 @@ type DramaImportItemBinding struct {
 }
 
 func NormalizeDramaImportItemKey(key string) (string, error) {
-	key = strings.ReplaceAll(strings.TrimSpace(key), "\\", "/")
-	if key == "" {
+	if strings.Contains(key, "\x00") {
+		return "", errors.New("导入项标识无效")
+	}
+	// 与 ZIP 分组同一无损规范：只统一分隔符，不 TrimSpace、不删除目录名中的合法空白。
+	n := strings.ReplaceAll(key, "\\", "/")
+	if n == "" {
 		return "", errors.New("缺少稳定的导入项标识")
 	}
-	clean := path.Clean(key)
-	if clean == "" || clean == "/" || strings.HasPrefix(clean, "../") || path.IsAbs(clean) {
+	if strings.HasPrefix(n, "/") || path.IsAbs(n) || (len(n) > 1 && n[1] == ':') {
+		return "", errors.New("导入项标识无效")
+	}
+	clean := path.Clean(n)
+	if clean == "" || clean == "/" || clean == ".." || strings.HasPrefix(clean, "../") || path.IsAbs(clean) {
+		return "", errors.New("导入项标识无效")
+	}
+	clean = strings.TrimPrefix(clean, "./")
+	if clean == "" || clean == "/" {
 		return "", errors.New("导入项标识无效")
 	}
 	if len(clean) > 512 {
 		return "", errors.New("导入项标识过长")
 	}
-	return clean, nil
+	// 点路径折叠会改变身份并可能与另一目录合并，前置拒绝而不是静默改写。
+	if clean != n {
+		return "", errors.New("导入项标识含有会混淆的点路径，拒绝规范化合并")
+	}
+	return n, nil
 }
 
 func GetDramaImportItemBinding(ctx context.Context, jobPK int64, itemKey string) (*DramaImportItemBinding, error) {
