@@ -3,6 +3,7 @@ package dao
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -416,8 +417,34 @@ func DramaJobClaimable(status string, until *time.Time, attempts, maxAttempts in
 	return false
 }
 
-func DramaJobLeaseFenced(jobOwner, reqOwner string, jobGen, reqGen int64, status string) bool {
-	return jobOwner != "" && jobOwner == reqOwner && jobGen == reqGen && status == DramaJobRunning
+func DramaJobLeaseFenced(jobOwner, reqOwner string, jobGen, reqGen int64, status string, until *time.Time, now time.Time) bool {
+	return jobOwner != "" && jobOwner == reqOwner && jobGen == reqGen && DramaJobLeaseHeld(status, until, now)
+}
+
+// DramaJobLeaseCallTimeout Renew/Release/Finish 等租约 RPC 的上限，避免卡住的调用拖住业务与关闭。
+func DramaJobLeaseCallTimeout(ttl time.Duration) time.Duration {
+	if ttl <= 0 {
+		ttl = DefaultDramaJobLeaseTTL
+	}
+	d := ttl / 3
+	if d < 50*time.Millisecond {
+		d = 50 * time.Millisecond
+	}
+	if d > 5*time.Second {
+		d = 5 * time.Second
+	}
+	return d
+}
+
+func leaseUntilSQL(ttl time.Duration) gdb.Raw {
+	if ttl <= 0 {
+		ttl = DefaultDramaJobLeaseTTL
+	}
+	ms := ttl.Milliseconds()
+	if ms < 1 {
+		ms = 1
+	}
+	return gdb.Raw(fmt.Sprintf("now() + interval '%d milliseconds'", ms))
 }
 
 func CountRunningDramaJobs(ctx context.Context) (int, error) {
@@ -428,7 +455,7 @@ func countLeasedRunningJobs(db gdb.DB, ctx context.Context) (int, error) {
 	n, err := db.Model("drama_import_job").Ctx(ctx).
 		Where("status", DramaJobRunning).
 		Where("lease_until IS NOT NULL").
-		Where("lease_until >", gtime.Now()).
+		Where("lease_until > now()").
 		Count()
 	return n, err
 }
@@ -460,7 +487,7 @@ func claimDramaImportJobDB(db gdb.DB, ctx context.Context, owner string, leaseTT
 		n, err := tx.Model("drama_import_job").Ctx(ctx).
 			Where("status", DramaJobRunning).
 			Where("lease_until IS NOT NULL").
-			Where("lease_until >", gtime.Now()).
+			Where("lease_until > now()").
 			Count()
 		if err != nil {
 			return err
@@ -471,7 +498,7 @@ func claimDramaImportJobDB(db gdb.DB, ctx context.Context, owner string, leaseTT
 		now := gtime.Now()
 		row, err := tx.Model("drama_import_job").Ctx(ctx).
 			Where("attempts < max_attempts").
-			Where("(status = ? OR (status = ? AND (lease_until IS NULL OR lease_until <= ?)))", DramaJobQueued, DramaJobRunning, now).
+			Where("(status = ? OR (status = ? AND (lease_until IS NULL OR lease_until <= now())))", DramaJobQueued, DramaJobRunning).
 			OrderAsc("id").
 			LockUpdate().
 			Limit(1).
@@ -483,7 +510,6 @@ func claimDramaImportJobDB(db gdb.DB, ctx context.Context, owner string, leaseTT
 			return nil
 		}
 		j := mapDramaJob(row.Map())
-		until := gtime.NewFromTime(time.Now().Add(leaseTTL))
 		started := now
 		if j.StartedAt != nil {
 			started = gtime.NewFromTime(*j.StartedAt)
@@ -493,17 +519,17 @@ func claimDramaImportJobDB(db gdb.DB, ctx context.Context, owner string, leaseTT
 			Where("id", j.Pk).
 			Where("lease_generation", j.LeaseGeneration).
 			Where("attempts < max_attempts").
-			Where("(status = ? OR (status = ? AND (lease_until IS NULL OR lease_until <= ?)))", DramaJobQueued, DramaJobRunning, now).
+			Where("(status = ? OR (status = ? AND (lease_until IS NULL OR lease_until <= now())))", DramaJobQueued, DramaJobRunning).
 			Data(g.Map{
 				"status":           DramaJobRunning,
 				"stage":            "running",
 				"attempts":         j.Attempts + 1,
 				"owner":            owner,
 				"lease_generation": nextGen,
-				"lease_until":      until,
-				"heartbeat_at":     now,
+				"lease_until":      leaseUntilSQL(leaseTTL),
+				"heartbeat_at":     gdb.Raw("now()"),
 				"started_at":       started,
-				"updated_at":       now,
+				"updated_at":       gdb.Raw("now()"),
 				"finished_at":      nil,
 				"error":            "",
 			}).Update()
@@ -519,8 +545,8 @@ func claimDramaImportJobDB(db gdb.DB, ctx context.Context, owner string, leaseTT
 		j.Attempts = j.Attempts + 1
 		j.Owner = owner
 		j.LeaseGeneration = nextGen
-		ut := until.Time
-		j.LeaseUntil = &ut
+		approx := time.Now().Add(leaseTTL)
+		j.LeaseUntil = &approx
 		ht := now.Time
 		j.HeartbeatAt = &ht
 		if j.StartedAt == nil {
@@ -537,7 +563,9 @@ func leaseFenceWhere(m *gdb.Model, lease DramaJobLease) *gdb.Model {
 	return m.Where("id", lease.JobPK).
 		Where("owner", lease.Owner).
 		Where("lease_generation", lease.Generation).
-		Where("status", DramaJobRunning)
+		Where("status", DramaJobRunning).
+		Where("lease_until IS NOT NULL").
+		Where("lease_until > now()")
 }
 
 func rowsOrLeaseLost(r sqlResult, err error) error {
@@ -563,12 +591,10 @@ func renewDramaImportJobLeaseDB(db gdb.DB, ctx context.Context, lease DramaJobLe
 	if ttl <= 0 {
 		ttl = DefaultDramaJobLeaseTTL
 	}
-	now := gtime.Now()
-	until := gtime.NewFromTime(time.Now().Add(ttl))
 	r, err := leaseFenceWhere(db.Model("drama_import_job").Ctx(ctx), lease).Data(g.Map{
-		"lease_until":  until,
-		"heartbeat_at": now,
-		"updated_at":   now,
+		"lease_until":  leaseUntilSQL(ttl),
+		"heartbeat_at": gdb.Raw("now()"),
+		"updated_at":   gdb.Raw("now()"),
 	}).Update()
 	return rowsOrLeaseLost(r, err)
 }
@@ -587,12 +613,10 @@ func heartbeatDramaImportJobDB(db gdb.DB, ctx context.Context, lease DramaJobLea
 	if ttl <= 0 {
 		ttl = DefaultDramaJobLeaseTTL
 	}
-	now := gtime.Now()
-	until := gtime.NewFromTime(time.Now().Add(ttl))
 	data := g.Map{
-		"lease_until":  until,
-		"heartbeat_at": now,
-		"updated_at":   now,
+		"lease_until":  leaseUntilSQL(ttl),
+		"heartbeat_at": gdb.Raw("now()"),
+		"updated_at":   gdb.Raw("now()"),
 		"progress":     progress,
 	}
 	if strings.TrimSpace(stage) != "" {
@@ -616,19 +640,19 @@ func finishDramaImportJobDB(db gdb.DB, ctx context.Context, lease DramaJobLease,
 	if progress > 100 {
 		progress = 100
 	}
-	now := gtime.Now()
 	r, err := leaseFenceWhere(db.Model("drama_import_job").Ctx(ctx), lease).Data(g.Map{
-		"status":       status,
-		"stage":        stage,
-		"message":      message,
-		"error":        errMsg,
-		"result_json":  resultJSON,
-		"progress":     progress,
-		"finished_at":  now,
-		"updated_at":   now,
-		"heartbeat_at": now,
-		"owner":        "",
-		"lease_until":  nil,
+		"status":           status,
+		"stage":            stage,
+		"message":          message,
+		"error":            errMsg,
+		"result_json":      resultJSON,
+		"progress":         progress,
+		"finished_at":      gdb.Raw("now()"),
+		"updated_at":       gdb.Raw("now()"),
+		"heartbeat_at":     gdb.Raw("now()"),
+		"owner":            "",
+		"lease_generation": gdb.Raw("lease_generation + 1"),
+		"lease_until":      nil,
 	}).Update()
 	return rowsOrLeaseLost(r, err)
 }
@@ -638,14 +662,54 @@ func ReleaseDramaImportJobLease(ctx context.Context, lease DramaJobLease) error 
 }
 
 func releaseDramaImportJobLeaseDB(db gdb.DB, ctx context.Context, lease DramaJobLease) error {
-	now := gtime.Now()
-	// 立即到期，回收阈值仍是 lease_until；代数不变，旧 owner 的后续 finish/heartbeat/cleanup 会失败。
+	// 使 (owner, generation) 立即失效，并清空到期时间；回收条件仍是无有效租约。
 	r, err := leaseFenceWhere(db.Model("drama_import_job").Ctx(ctx), lease).Data(g.Map{
-		"lease_until":  now,
-		"heartbeat_at": now,
-		"updated_at":   now,
+		"owner":            "",
+		"lease_generation": gdb.Raw("lease_generation + 1"),
+		"lease_until":      nil,
+		"heartbeat_at":     gdb.Raw("now()"),
+		"updated_at":       gdb.Raw("now()"),
 	}).Update()
 	return rowsOrLeaseLost(r, err)
+}
+
+func assertDramaJobLeaseTx(ctx context.Context, tx gdb.TX, lease DramaJobLease) error {
+	row, err := leaseFenceWhere(tx.Model("drama_import_job").Ctx(ctx), lease).Fields("id").LockUpdate().One()
+	if err != nil {
+		return err
+	}
+	if row.IsEmpty() {
+		return ErrDramaJobLeaseLost
+	}
+	return nil
+}
+
+// AssertDramaJobLease 短事务校验租约仍有效（不含业务写入）。
+func AssertDramaJobLease(ctx context.Context, lease DramaJobLease) error {
+	return assertDramaJobLeaseDB(g.DB(), ctx, lease)
+}
+
+func assertDramaJobLeaseDB(db gdb.DB, ctx context.Context, lease DramaJobLease) error {
+	return db.Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
+		return assertDramaJobLeaseTx(ctx, tx, lease)
+	})
+}
+
+// WithDramaJobLease 在同一短事务中校验有效租约并执行 DB 副作用；不得包裹 MinIO/Kafka。
+func WithDramaJobLease(ctx context.Context, lease DramaJobLease, fn func(ctx context.Context) error) error {
+	return withDramaJobLeaseDB(g.DB(), ctx, lease, fn)
+}
+
+func withDramaJobLeaseDB(db gdb.DB, ctx context.Context, lease DramaJobLease, fn func(ctx context.Context) error) error {
+	if fn == nil {
+		return errors.New("missing lease callback")
+	}
+	return db.Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
+		if err := assertDramaJobLeaseTx(ctx, tx, lease); err != nil {
+			return err
+		}
+		return fn(ctx)
+	})
 }
 
 func CancelQueuedDramaImportJob(ctx context.Context, id int64, message string) error {
@@ -705,20 +769,20 @@ func UpdateDramaImportJobResult(ctx context.Context, id int64, status, stage, me
 }
 
 func FailExhaustedStaleDramaJobs(ctx context.Context) error {
-	now := gtime.Now()
 	_, err := g.DB().Model("drama_import_job").Ctx(ctx).
 		Where("status", DramaJobRunning).
-		Where("(lease_until IS NULL OR lease_until <= ?)", now).
+		Where("(lease_until IS NULL OR lease_until <= now())").
 		Where("attempts >= max_attempts").
 		Data(g.Map{
-			"status":      DramaJobFailed,
-			"stage":       "failed",
-			"error":       "任务中断且已达最大重试次数",
-			"message":     "任务中断且已达最大重试次数",
-			"finished_at": now,
-			"updated_at":  now,
-			"owner":       "",
-			"lease_until": nil,
+			"status":           DramaJobFailed,
+			"stage":            "failed",
+			"error":            "任务中断且已达最大重试次数",
+			"message":          "任务中断且已达最大重试次数",
+			"finished_at":      gdb.Raw("now()"),
+			"updated_at":       gdb.Raw("now()"),
+			"owner":            "",
+			"lease_generation": gdb.Raw("lease_generation + 1"),
+			"lease_until":      nil,
 		}).Update()
 	return err
 }

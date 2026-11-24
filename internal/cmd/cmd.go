@@ -46,8 +46,11 @@ var Main = gcmd.Command{
 		}()
 		// 短剧 zip 异步导入（DB 轮询，逐集仍走原 Kafka 转码）
 		workerCtx, workerCancel := context.WithCancel(context.Background())
-		defer workerCancel()
-		go svc.RunDramaImportWorker(workerCtx)
+		workerDone := make(chan struct{})
+		go func() {
+			defer close(workerDone)
+			svc.RunDramaImportWorker(workerCtx)
+		}()
 
 		s := g.Server()
 		// 漫画 zip 常超过 GF 默认 8MB / 配置里的 256MB；Nacos 热更新改不了已启动的 server 限制。
@@ -79,6 +82,12 @@ var Main = gcmd.Command{
 		})
 
 		s.Run()
+		workerCancel()
+		select {
+		case <-workerDone:
+		case <-time.After(logic.DramaImportWorkerShutdownWait()):
+			g.Log().Warning(ctx, "drama import worker did not exit before shutdown wait")
+		}
 		_ = bus.Close()
 		return nil
 	},

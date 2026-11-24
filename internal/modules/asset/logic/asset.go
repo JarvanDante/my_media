@@ -13,6 +13,7 @@ import (
 
 	v1 "github.com/JarvanDante/my_media/api/admin/asset/v1"
 	"github.com/JarvanDante/my_media/internal/consts"
+	"github.com/JarvanDante/my_media/internal/dao"
 	"github.com/JarvanDante/my_media/internal/modules/asset/domain"
 	"github.com/JarvanDante/my_media/internal/modules/asset/service"
 	"github.com/JarvanDante/my_media/internal/shared/errcode"
@@ -227,6 +228,14 @@ func (s *sAsset) PresignUpload(ctx context.Context, code, filename string) (*v1.
 }
 
 func (s *sAsset) TriggerTranscode(ctx context.Context, code string, coverSeekSec int) (string, error) {
+	return s.triggerTranscode(ctx, dao.DramaJobLease{}, code, coverSeekSec)
+}
+
+func (s *sAsset) triggerTranscodeIfLease(ctx context.Context, lease dao.DramaJobLease, code string, coverSeekSec int) (string, error) {
+	return s.triggerTranscode(ctx, lease, code, coverSeekSec)
+}
+
+func (s *sAsset) triggerTranscode(ctx context.Context, lease dao.DramaJobLease, code string, coverSeekSec int) (string, error) {
 	if s.bus == nil || !s.bus.Enabled() {
 		return "", gerror.NewCode(errcode.CodeBadRequest, "Kafka 未启用")
 	}
@@ -276,7 +285,18 @@ func (s *sAsset) TriggerTranscode(ctx context.Context, code string, coverSeekSec
 		CreatedAt:     time.Now().Format(time.RFC3339),
 	}
 
-	if err := s.repo.MarkTranscoding(ctx, a.Pk, jobID, profile); err != nil {
+	mark := func(ctx context.Context) error {
+		return s.repo.MarkTranscoding(ctx, a.Pk, jobID, profile)
+	}
+	if lease.JobPK > 0 {
+		if err := withDramaImportLease(ctx, lease, mark); err != nil {
+			return "", err
+		}
+		// 发布是外部投递，只能在投递前再校验租约以降低失租后重复投递，不能保证 exactly-once。
+		if err := dao.AssertDramaJobLease(ctx, lease); err != nil {
+			return "", err
+		}
+	} else if err := mark(ctx); err != nil {
 		return "", err
 	}
 	if err := s.bus.PublishJob(ctx, job); err != nil {
