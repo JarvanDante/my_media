@@ -11,6 +11,10 @@ type AssetItem struct {
 	PlayUrl         string `json:"play_url"`
 	DurationSec     int    `json:"duration_sec"`
 	Kind            int    `json:"kind"`
+	ParentId        int64  `json:"parent_id,omitempty"`
+	Seq             int    `json:"seq,omitempty"`
+	UpdateStatus    int    `json:"update_status,omitempty"`
+	Intro           string `json:"intro,omitempty"`
 	Category        string `json:"category"`
 	ChapterCount    int    `json:"chapter_count"`
 	WordCount       int    `json:"word_count,omitempty"`
@@ -23,7 +27,7 @@ type ListReq struct {
 	Size    int    `json:"size" d:"20"`
 	Keyword string `json:"keyword"`
 	Status  int    `json:"status" d:"-1"`
-	Kind    int    `json:"kind" d:"-1"` // -1全部 0视频 1漫画 2动漫 3抖音 4小说
+	Kind    int    `json:"kind" d:"-1"` // -1全部 0视频 1漫画 2动漫 3抖音 4小说 5短剧
 }
 
 type ListRes struct {
@@ -36,7 +40,9 @@ type CreateReq struct {
 	Title    string `json:"title" v:"required#标题必填"`
 	CoverUrl string `json:"cover_url"`
 	Remark   string `json:"remark"`
-	Kind     int    `json:"kind" d:"0"` // 0视频 2动漫 3抖音；漫画/小说请走 zip 导入
+	Kind         int    `json:"kind" d:"0"` // 0视频 2动漫 3抖音 5短剧；漫画/小说请走 zip 导入
+	Intro        string `json:"intro"`
+	UpdateStatus int    `json:"update_status"`
 }
 
 type CreateRes struct {
@@ -56,8 +62,8 @@ type DetailRes struct {
 	TranscodeJobId string `json:"transcode_job_id"`
 	TranscodeError string `json:"transcode_error"`
 	Remark         string `json:"remark"`
-	Intro          string `json:"intro"`
 	Chapters       []ComicChapterItem `json:"chapters,omitempty"`
+	Episodes       []DramaEpisodeItem `json:"episodes,omitempty"`
 }
 
 type UploadURLReq struct {
@@ -208,4 +214,83 @@ type ImportNovelsRes struct {
 	FailedCount int                `json:"failed_count"`
 	List        []ImportNovelsItem `json:"list"`
 	Failed      []ImportNovelsFail `json:"failed"`
+}
+
+type DramaEpisodeItem struct {
+	Id              string `json:"id"`
+	Seq             int    `json:"seq"`
+	Title           string `json:"title"`
+	Status          int    `json:"status"`
+	TranscodeStatus string `json:"transcode_status"`
+	PlayUrl         string `json:"play_url"`
+	DurationSec     int    `json:"duration_sec"`
+	SourceKey       string `json:"source_key"`
+	CoverUrl        string `json:"cover_url,omitempty"`
+	TranscodeError  string `json:"transcode_error,omitempty"`
+}
+
+type UpdateAssetReq struct {
+	g.Meta       `path:"/admin/assets/{id}" method:"put" tags:"Admin/Asset" summary:"编辑短剧整部或剧集资料"`
+	Id           string `json:"id" in:"path" v:"required|length:8,16"`
+	Title        string `json:"title"`
+	Remark       string `json:"remark"`
+	Intro        string `json:"intro"`
+	UpdateStatus int    `json:"update_status"`
+	Seq          int    `json:"seq"`
+}
+
+type UpdateAssetRes struct {
+	Id string `json:"id"`
+}
+
+type CreateEpisodeReq struct {
+	g.Meta `path:"/admin/assets/{id}/episodes" method:"post" tags:"Admin/Asset" summary:"新增短剧剧集(按集号幂等)"`
+	Id     string `json:"id" in:"path" v:"required|length:8,16"`
+	Seq    int    `json:"seq" v:"required|min:1#集号必须从1开始"`
+	Title  string `json:"title"`
+}
+
+type CreateEpisodeRes struct {
+	Id      string `json:"id"`
+	Created bool   `json:"created"`
+}
+
+type DramaImportLimitsReq struct {
+	g.Meta `path:"/admin/dramas/import-limits" method:"get" tags:"Admin/Asset" summary:"短剧zip导入上限"`
+}
+
+type DramaImportLimitsRes struct {
+	MaxZipBytes     int64   `json:"max_zip_bytes"`
+	MaxExtractBytes int64   `json:"max_extract_bytes"`
+	MaxFiles        int     `json:"max_files"`
+	MaxFileBytes    int64   `json:"max_file_bytes"`
+	MaxRatio        float64 `json:"max_ratio"`
+	MinFreeBytes    int64   `json:"min_free_bytes"`
+}
+
+type ImportDramasReq struct {
+	g.Meta `path:"/admin/dramas/import" method:"post" mime:"multipart/form-data" tags:"Admin/Asset" summary:"短剧 zip 批量入库"`
+	Resume bool   `json:"resume" p:"resume" dc:"续传：同名短剧追加未入库集数"`
+	Plan   string `json:"plan" p:"plan" dc:"可选，JSON 导入计划"`
+}
+
+type ImportDramasItem struct {
+	Id            string `json:"id"`
+	Title         string `json:"title"`
+	ChapterCount  int    `json:"chapter_count"`
+	Appended      bool   `json:"appended"`
+	SkippedCount  int    `json:"skipped_count"`
+	ImportedCount int    `json:"imported_count"`
+}
+
+type ImportDramasFail struct {
+	Title string `json:"title"`
+	Error string `json:"error"`
+}
+
+type ImportDramasRes struct {
+	Imported    int                `json:"imported"`
+	FailedCount int                `json:"failed_count"`
+	List        []ImportDramasItem `json:"list"`
+	Failed      []ImportDramasFail `json:"failed"`
 }

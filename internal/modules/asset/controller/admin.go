@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,9 +39,15 @@ func (c *Admin) List(ctx context.Context, req *v1.ListReq) (res *v1.ListRes, err
 }
 
 func (c *Admin) Create(ctx context.Context, req *v1.CreateReq) (res *v1.CreateRes, err error) {
-	code, err := c.svc.Create(ctx, req.Title, req.CoverUrl, req.Remark, req.Kind)
-	if err != nil {
-		return nil, err
+	var code string
+	var err2 error
+	if req.Kind == consts.KindDrama {
+		code, err2 = c.svc.CreateDrama(ctx, req.Title, req.CoverUrl, req.Remark, req.Intro, req.UpdateStatus)
+	} else {
+		code, err2 = c.svc.Create(ctx, req.Title, req.CoverUrl, req.Remark, req.Kind)
+	}
+	if err2 != nil {
+		return nil, err2
 	}
 	return &v1.CreateRes{Id: code}, nil
 }
@@ -61,7 +68,22 @@ func (c *Admin) Detail(ctx context.Context, req *v1.DetailReq) (res *v1.DetailRe
 		TranscodeJobId: a.TranscodeJobId,
 		TranscodeError: a.TranscodeError,
 		Remark:         a.Remark,
-		Intro:          a.Intro,
+	}
+	if consts.IsDramaSeries(a.Kind, a.ParentId) {
+		eps, e := c.svc.ListEpisodes(ctx, a.Code)
+		if e != nil {
+			return nil, e
+		}
+		res.Episodes = make([]v1.DramaEpisodeItem, 0, len(eps))
+		for _, ep := range eps {
+			item := toAdminItem(ep)
+			res.Episodes = append(res.Episodes, v1.DramaEpisodeItem{
+				Id: ep.Code, Seq: ep.Seq, Title: ep.Title, Status: ep.Status,
+				TranscodeStatus: ep.TranscodeStatus, PlayUrl: item.PlayUrl,
+				DurationSec: ep.DurationSec, SourceKey: ep.SourceKey,
+				CoverUrl: item.CoverUrl, TranscodeError: ep.TranscodeError,
+			})
+		}
 	}
 	if a.Kind == consts.KindComics {
 		chs, e := c.svc.ComicChapters(ctx, a.Code)
@@ -208,6 +230,82 @@ func (c *Admin) ImportNovels(ctx context.Context, req *v1.ImportNovelsReq) (res 
 	return c.svc.ImportNovels(ctx, filepath.Join(dir, saved), resume)
 }
 
+
+func (c *Admin) UpdateAsset(ctx context.Context, req *v1.UpdateAssetReq) (res *v1.UpdateAssetRes, err error) {
+	a, err := c.svc.Get(ctx, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	if a == nil {
+		return nil, gerror.NewCode(errcode.CodeNotFound, "资产不存在")
+	}
+	if consts.IsDramaSeries(a.Kind, a.ParentId) {
+		if err := c.svc.UpdateDrama(ctx, req.Id, req.Title, req.Remark, req.Intro, req.UpdateStatus); err != nil {
+			return nil, err
+		}
+	} else if consts.IsDramaEpisode(a.Kind, a.ParentId) {
+		if err := c.svc.UpdateEpisode(ctx, req.Id, req.Title, req.Seq); err != nil {
+			return nil, err
+		}
+	} else {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, "仅短剧支持此编辑接口")
+	}
+	return &v1.UpdateAssetRes{Id: req.Id}, nil
+}
+
+func (c *Admin) CreateEpisode(ctx context.Context, req *v1.CreateEpisodeReq) (res *v1.CreateEpisodeRes, err error) {
+	code, created, err := c.svc.CreateEpisode(ctx, req.Id, req.Seq, req.Title)
+	if err != nil {
+		return nil, err
+	}
+	return &v1.CreateEpisodeRes{Id: code, Created: created}, nil
+}
+
+func (c *Admin) DramaImportLimits(ctx context.Context, req *v1.DramaImportLimitsReq) (res *v1.DramaImportLimitsRes, err error) {
+	lim := c.svc.ImportLimits(ctx)
+	return &lim, nil
+}
+
+func (c *Admin) ImportDramas(ctx context.Context, req *v1.ImportDramasReq) (res *v1.ImportDramasRes, err error) {
+	r := ghttp.RequestFromCtx(ctx)
+	up := r.GetUploadFile("file")
+	if up == nil {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, "请上传 zip 文件")
+	}
+	lim := c.svc.ImportLimits(ctx)
+	if up.Size > lim.MaxZipBytes {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, "压缩包超过上限 "+humanAdminBytes(lim.MaxZipBytes))
+	}
+	if strings.ToLower(filepath.Ext(up.Filename)) != ".zip" {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, "只支持 .zip")
+	}
+	dir, err := os.MkdirTemp("", "drama-import-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+	saved, err := up.Save(dir)
+	if err != nil {
+		return nil, err
+	}
+	resume := req.Resume || r.Get("resume").Bool()
+	plan := req.Plan
+	if plan == "" {
+		plan = r.Get("plan").String()
+	}
+	return c.svc.ImportDramas(ctx, filepath.Join(dir, saved), up.Filename, plan, resume)
+}
+
+func humanAdminBytes(n int64) string {
+	if n >= 1024*1024*1024 {
+		return fmt.Sprintf("%.2fGB", float64(n)/1024/1024/1024)
+	}
+	if n >= 1024*1024 {
+		return fmt.Sprintf("%.1fMB", float64(n)/1024/1024)
+	}
+	return fmt.Sprintf("%dB", n)
+}
+
 func toAdminItem(a domain.Asset) v1.AssetItem {
 	cover := playsign.WrapCover(a.Code, a.CoverUrl, "admin")
 	play := a.PlayUrl
@@ -218,7 +316,9 @@ func toAdminItem(a domain.Asset) v1.AssetItem {
 		Id: a.Code, Title: a.Title, CoverUrl: cover, Status: a.Status,
 		TranscodeStatus: a.TranscodeStatus, PlayUrl: play,
 		DurationSec: a.DurationSec, Kind: a.Kind, Category: a.Category,
-		ChapterCount: a.ChapterCount, WordCount: a.WordCount, CreatedAt: a.CreatedAt,
+		ChapterCount: a.ChapterCount, WordCount: a.WordCount,
+		ParentId: a.ParentId, Seq: a.Seq, UpdateStatus: a.UpdateStatus, Intro: a.Intro,
+		CreatedAt: a.CreatedAt,
 	}
 }
 

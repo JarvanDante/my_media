@@ -30,4 +30,12 @@ type Asset interface {
 
 	ListPicks(ctx context.Context, appKey string, page, size int) (list []domain.PickRecord, total int, err error)
 	PickedSet(ctx context.Context, appKey string, codes []string) (map[string]bool, error)
+
+	CreateDrama(ctx context.Context, title, coverUrl, remark, intro string, updateStatus int) (code string, err error)
+	UpdateDrama(ctx context.Context, code, title, remark, intro string, updateStatus int) error
+	CreateEpisode(ctx context.Context, parentCode string, seq int, title string) (code string, created bool, err error)
+	UpdateEpisode(ctx context.Context, code, title string, seq int) error
+	ListEpisodes(ctx context.Context, parentCode string) ([]domain.Asset, error)
+	ImportDramas(ctx context.Context, zipPath, zipName, planJSON string, resume bool) (*v1.ImportDramasRes, error)
+	ImportLimits(ctx context.Context) v1.DramaImportLimitsRes
 }

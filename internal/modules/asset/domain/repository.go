@@ -22,6 +22,9 @@ type Asset struct {
 	Intro           string
 	ChapterCount    int
 	WordCount       int
+	ParentId        int64
+	Seq             int
+	UpdateStatus    int
 	CreatedAt       string
 }
 
@@ -30,7 +33,8 @@ type ListFilter struct {
 	Size      int
 	Keyword   string
 	Status    int // -1 全部
-	Kind      int // -1 全部  0视频  1漫画  2动漫  3抖音  4小说
+	Kind      int // -1 全部  0视频  1漫画  2动漫  3抖音  4小说  5短剧
+	ParentId  int64 // >0 时列出该整部下的剧集；0 时排除剧集
 	ReadyOnly bool
 }
 
@@ -111,6 +115,15 @@ type Repository interface {
 	DeleteNovelChapter(ctx context.Context, assetID int64, seq int) error
 	GetByCode(ctx context.Context, code string) (*Asset, error)
 	Delete(ctx context.Context, pk int64) error
+	DeleteTree(ctx context.Context, parentPK int64) error
+	CreateDrama(ctx context.Context, title, coverUrl, remark, intro string, updateStatus int) (code string, err error)
+	UpdateDrama(ctx context.Context, pk int64, title, remark, intro string, updateStatus int) error
+	CreateEpisode(ctx context.Context, parentPK int64, seq int, title string) (code string, created bool, err error)
+	UpdateEpisodeMeta(ctx context.Context, pk int64, title string, seq int) error
+	FindDramasByTitle(ctx context.Context, title string) ([]Asset, error)
+	ListEpisodes(ctx context.Context, parentPK int64) ([]Asset, error)
+	FindEpisode(ctx context.Context, parentPK int64, seq int) (*Asset, error)
+	UpdateChapterCount(ctx context.Context, pk int64, n int) error
 	Pick(ctx context.Context, appKey, siteCode, code string) (*Asset, error)
 	ListPicks(ctx context.Context, appKey string, page, size int) (list []PickRecord, total int, err error)
 	PickedSet(ctx context.Context, appKey string, codes []string) (map[string]bool, error)

@@ -43,8 +43,11 @@ func (s *sAsset) List(ctx context.Context, f domain.ListFilter) ([]domain.Asset,
 }
 
 func (s *sAsset) Create(ctx context.Context, title, coverUrl, remark string, kind int) (string, error) {
+	if kind == consts.KindDrama {
+		return s.CreateDrama(ctx, title, coverUrl, remark, "", consts.UpdateStatusSerial)
+	}
 	if !consts.IsHLSKind(kind) {
-		return "", gerror.NewCode(errcode.CodeBadRequest, "创建只支持视频、抖音或动漫，漫画和小说请用 zip 导入")
+		return "", gerror.NewCode(errcode.CodeBadRequest, "创建只支持视频、抖音、动漫或短剧，漫画和小说请用 zip 导入")
 	}
 	return s.repo.Create(ctx, title, coverUrl, remark, kind)
 }
@@ -70,6 +73,38 @@ func (s *sAsset) Delete(ctx context.Context, code string) (int, error) {
 	if s.store == nil {
 		return 0, gerror.NewCode(errcode.CodeBadRequest, "MinIO 未初始化，拒绝删除以免残留对象")
 	}
+	targets := []domain.Asset{*a}
+	if consts.IsDramaSeries(a.Kind, a.ParentId) {
+		children, e := s.repo.ListEpisodes(ctx, a.Pk)
+		if e != nil {
+			return 0, e
+		}
+		targets = append(targets, children...)
+	}
+	deleted := 0
+	for i := range targets {
+		n, e := s.removeAssetObjects(ctx, &targets[i])
+		deleted += n
+		if e != nil {
+			return deleted, e
+		}
+	}
+	if consts.IsDramaSeries(a.Kind, a.ParentId) {
+		if err := s.repo.DeleteTree(ctx, a.Pk); err != nil {
+			return deleted, gerror.Wrap(err, "对象已清理但删除库记录失败，请重试或人工核对")
+		}
+	} else {
+		if err := s.repo.Delete(ctx, a.Pk); err != nil {
+			return deleted, gerror.Wrap(err, "对象已清理但删除库记录失败，请重试或人工核对")
+		}
+		if a.ParentId > 0 {
+			_ = s.refreshDramaCount(ctx, a.ParentId)
+		}
+	}
+	return deleted, nil
+}
+
+func (s *sAsset) removeAssetObjects(ctx context.Context, a *domain.Asset) (int, error) {
 	bucket := a.SourceBucket
 	if bucket == "" {
 		bucket = s.store.Bucket()
@@ -83,16 +118,11 @@ func (s *sAsset) Delete(ctx context.Context, code string) (int, error) {
 			return deleted, gerror.Wrapf(remErr, "清理对象存储失败(%s)，已中止，库记录未删", prefix)
 		}
 	}
-	// 兼容落在前缀外的单个原片 key
 	if a.SourceKey != "" && !underAnyPrefix(a.SourceKey, prefixes) {
 		if remErr := s.store.RemoveObject(ctx, bucket, a.SourceKey); remErr != nil {
 			return deleted, gerror.Wrapf(remErr, "清理原片失败(%s)，已中止，库记录未删", a.SourceKey)
 		}
 		deleted++
-	}
-
-	if err := s.repo.Delete(ctx, a.Pk); err != nil {
-		return deleted, gerror.Wrap(err, "对象已清理但删除库记录失败，请重试或人工核对")
 	}
 	return deleted, nil
 }
@@ -123,6 +153,9 @@ func objectPrefixesForAsset(a *domain.Asset) []string {
 		add(consts.PrefixVideo + "hls/" + a.Code)
 		add(consts.PrefixComics + a.Code)
 		add(consts.PrefixNovel + a.Code)
+		add(consts.PrefixDrama + "source/" + a.Code)
+		add(consts.PrefixDrama + "hls/" + a.Code)
+		add(consts.PrefixDrama + a.Code)
 	}
 	// 兼容早期用数字主键拼路径：media/hls/4/index.m3u8
 	if a.PlayKey != "" {
@@ -168,6 +201,9 @@ func (s *sAsset) PresignUpload(ctx context.Context, code, filename string) (*v1.
 	if a.Kind == consts.KindComics || a.Kind == consts.KindNovel {
 		return nil, gerror.NewCode(errcode.CodeBadRequest, "漫画和小说请用批量 zip 导入，不必上传视频原片")
 	}
+	if consts.IsDramaSeries(a.Kind, a.ParentId) {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, "短剧整部请上传封面；原片请在剧集上上传或用 zip 导入")
+	}
 	ext := strings.ToLower(filepath.Ext(filename))
 	if ext == "" {
 		ext = ".mp4"
@@ -206,6 +242,9 @@ func (s *sAsset) TriggerTranscode(ctx context.Context, code string, coverSeekSec
 	}
 	if a.Kind == consts.KindComics || a.Kind == consts.KindNovel {
 		return "", gerror.NewCode(errcode.CodeBadRequest, "漫画和小说无需转码")
+	}
+	if consts.IsDramaSeries(a.Kind, a.ParentId) {
+		return "", gerror.NewCode(errcode.CodeBadRequest, "短剧整部不能转码，请对剧集触发转码")
 	}
 	if a.SourceBucket == "" || a.SourceKey == "" {
 		return "", gerror.NewCode(errcode.CodeBadRequest, "请先获取上传地址并上传原片")

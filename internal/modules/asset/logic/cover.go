@@ -60,6 +60,9 @@ func (s *sAsset) ReplaceCover(ctx context.Context, code, filename string, body i
 	if a.Kind == consts.KindNovel {
 		key = consts.PrefixNovel + a.Code + "/cover.bnc"
 	}
+	if consts.IsDramaSeries(a.Kind, a.ParentId) {
+		key = consts.DramaCoverKey(a.Code)
+	}
 	bucket := a.SourceBucket
 	if bucket == "" {
 		bucket = s.store.Bucket()
@@ -74,5 +77,11 @@ func (s *sAsset) ReplaceCover(ctx context.Context, code, filename string, body i
 	if (a.Kind == consts.KindComics || a.Kind == consts.KindNovel) && a.SourceKey != "" && a.SourceKey != key {
 		_ = s.store.RemoveObject(ctx, bucket, a.SourceKey)
 	}
-	return s.repo.UpdateCover(ctx, a.Pk, s.store.PublicURL(bucket, key), key, a.Kind)
+	if err := s.repo.UpdateCover(ctx, a.Pk, s.store.PublicURL(bucket, key), key, a.Kind); err != nil {
+		return err
+	}
+	if consts.IsDramaSeries(a.Kind, a.ParentId) {
+		return s.repo.BindSource(ctx, a.Pk, bucket, key)
+	}
+	return nil
 }

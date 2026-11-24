@@ -32,6 +32,9 @@ func (c *Open) List(ctx context.Context, req *v1.ListReq) (res *v1.ListRes, err 
 	if kind < 0 {
 		kind = consts.KindVideo
 	}
+	if kind == consts.KindDrama {
+		return &v1.ListRes{List: []v1.AssetItem{}}, nil
+	}
 	list, total, err := c.svc.List(ctx, domain.ListFilter{
 		Page: req.Page, Size: req.Size, Keyword: req.Keyword, ReadyOnly: true, Kind: kind,
 	})
@@ -64,6 +67,9 @@ func (c *Open) Detail(ctx context.Context, req *v1.DetailReq) (res *v1.DetailRes
 	if a == nil || a.Status != 2 {
 		return nil, gerror.NewCode(errcode.CodeNotFound, "资产不可用")
 	}
+	if err := rejectOpenDrama(a); err != nil {
+		return nil, err
+	}
 	r := g.RequestFromCtx(ctx)
 	appKey := r.GetCtxVar("app_key").String()
 	siteCode := r.GetCtxVar("site_code").String()
@@ -91,6 +97,13 @@ func (c *Open) Detail(ctx context.Context, req *v1.DetailReq) (res *v1.DetailRes
 }
 
 func (c *Open) Pick(ctx context.Context, req *v1.PickReq) (res *v1.PickRes, err error) {
+	cur, err := c.svc.Get(ctx, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	if err := rejectOpenDrama(cur); err != nil {
+		return nil, err
+	}
 	r := g.RequestFromCtx(ctx)
 	appKey := r.GetCtxVar("app_key").String()
 	siteCode := r.GetCtxVar("site_code").String()
@@ -153,6 +166,9 @@ func (c *Open) PlayToken(ctx context.Context, req *v1.PlayTokenReq) (res *v1.Pla
 	}
 	if a == nil || a.Status != 2 {
 		return nil, gerror.NewCode(errcode.CodeNotFound, "资产不可用")
+	}
+	if err := rejectOpenDrama(a); err != nil {
+		return nil, err
 	}
 	r := g.RequestFromCtx(ctx)
 	appKey := r.GetCtxVar("app_key").String()
@@ -219,4 +235,14 @@ func toOpenChapters(code, siteCode string, chs []adminv1.ComicChapterItem) []v1.
 		})
 	}
 	return out
+}
+
+func rejectOpenDrama(a *domain.Asset) error {
+	if a == nil {
+		return nil
+	}
+	if a.Kind == consts.KindDrama || a.ParentId > 0 {
+		return gerror.NewCode(errcode.CodeNotFound, "资产不可用")
+	}
+	return nil
 }

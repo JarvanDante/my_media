@@ -345,7 +345,7 @@ func (s *sAsset) decorateCover(ctx context.Context, a *domain.Asset) {
 	if a == nil || s.store == nil || a.SourceKey == "" {
 		return
 	}
-	if a.Kind != consts.KindComics && a.Kind != consts.KindNovel {
+	if a.Kind != consts.KindComics && a.Kind != consts.KindNovel && !consts.IsDramaSeries(a.Kind, a.ParentId) {
 		return
 	}
 	if u := s.signObject(ctx, a.SourceBucket, a.SourceKey); u != "" {

@@ -34,6 +34,11 @@ func (r *assetRepo) List(ctx context.Context, f domain.ListFilter) ([]domain.Ass
 	if f.Kind >= 0 {
 		m = m.Where("kind", f.Kind)
 	}
+	if f.ParentId > 0 {
+		m = m.Where("parent_id", f.ParentId)
+	} else {
+		m = m.Where("parent_id", 0)
+	}
 	if f.ReadyOnly {
 		m = m.Where("status", consts.AssetStatusReady)
 	} else if f.Status >= 0 {
@@ -73,6 +78,8 @@ func (r *assetRepo) Create(ctx context.Context, title, coverUrl, remark string, 
 			"cover_url":        coverUrl,
 			"remark":           remark,
 			"kind":             kind,
+			"parent_id":        0,
+			"seq":              0,
 			"status":           consts.AssetStatusDraft,
 			"transcode_status": "none",
 			"created_at":       gtime.Now(),
@@ -337,6 +344,9 @@ func mapAsset(m g.Map) domain.Asset {
 		Intro:           g.NewVar(m["intro"]).String(),
 		ChapterCount:    g.NewVar(m["chapter_count"]).Int(),
 		WordCount:       g.NewVar(m["word_count"]).Int(),
+		ParentId:        g.NewVar(m["parent_id"]).Int64(),
+		Seq:             g.NewVar(m["seq"]).Int(),
+		UpdateStatus:    g.NewVar(m["update_status"]).Int(),
 		CreatedAt:       g.NewVar(m["created_at"]).String(),
 	}
 }

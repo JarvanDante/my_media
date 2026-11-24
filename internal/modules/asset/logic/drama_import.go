@@ -1,0 +1,407 @@
+package logic
+
+import (
+	"archive/zip"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path"
+	"path/filepath"
+	"strings"
+
+	"github.com/gogf/gf/v2/errors/gerror"
+	"github.com/google/uuid"
+
+	v1 "github.com/JarvanDante/my_media/api/admin/asset/v1"
+	"github.com/JarvanDante/my_media/internal/consts"
+	"github.com/JarvanDante/my_media/internal/modules/asset/domain"
+	"github.com/JarvanDante/my_media/internal/shared/aesbnc"
+	"github.com/JarvanDante/my_media/internal/shared/errcode"
+)
+
+type DramaImportPlan struct {
+	Items []DramaImportPlanItem `json:"items"`
+}
+
+type DramaImportPlanItem struct {
+	Title    string                `json:"title"`
+	Cover    string                `json:"cover"`
+	Episodes []DramaImportPlanEp   `json:"episodes"`
+}
+
+type DramaImportPlanEp struct {
+	Path  string `json:"path"`
+	Seq   int    `json:"seq"`
+	Title string `json:"title"`
+}
+
+func (s *sAsset) ImportDramas(ctx context.Context, zipPath, zipName, planJSON string, resume bool) (*v1.ImportDramasRes, error) {
+	if s.store == nil {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, "MinIO 未初始化")
+	}
+	lim := dramaImportLimits(ctx)
+	st, err := os.Stat(zipPath)
+	if err != nil {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, "无法读取压缩包")
+	}
+	if st.Size() > lim.MaxZipBytes {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, fmt.Sprintf("压缩包大小 %s 超过上限 %s", humanBytes(st.Size()), humanBytes(lim.MaxZipBytes)))
+	}
+	if err := ensureDiskFree(filepath.Dir(zipPath), lim.MinFreeBytes); err != nil {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
+	}
+
+	zr, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, "无法打开压缩包")
+	}
+	defer zr.Close()
+
+	metas, err := zipMetasFromReader(&zr.Reader)
+	if err != nil {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
+	}
+	if err := checkZipLimits(st.Size(), metas, lim); err != nil {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
+	}
+	var largest int64
+	for _, f := range metas {
+		if shouldIgnoreZipName(f.Name) {
+			continue
+		}
+		if f.UncompressedSize > largest {
+			largest = f.UncompressedSize
+		}
+	}
+	if err := ensureDiskFree(filepath.Dir(zipPath), lim.MinFreeBytes+largest); err != nil {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
+	}
+
+	groups, err := GroupDramaZip(metas, zipName)
+	if err != nil {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
+	}
+	if planJSON != "" {
+		groups, err = applyDramaPlan(groups, planJSON)
+		if err != nil {
+			return nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
+		}
+	}
+
+	files := map[string]*zip.File{}
+	for _, f := range zr.File {
+		clean, err := sanitizeZipEntryName(f.Name)
+		if err != nil {
+			if shouldIgnoreZipName(f.Name) {
+				continue
+			}
+			return nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
+		}
+		files[clean] = f
+	}
+
+	res := &v1.ImportDramasRes{
+		List:   make([]v1.ImportDramasItem, 0, len(groups)),
+		Failed: make([]v1.ImportDramasFail, 0),
+	}
+	workDir, err := os.MkdirTemp(filepath.Dir(zipPath), "entry-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(workDir)
+
+	for _, g := range groups {
+		item, ferr := s.importOneDrama(ctx, g, files, workDir, lim, resume)
+		if ferr != nil {
+			res.Failed = append(res.Failed, v1.ImportDramasFail{Title: g.Title, Error: ferr.Error()})
+			continue
+		}
+		res.List = append(res.List, *item)
+	}
+	res.Imported = len(res.List)
+	res.FailedCount = len(res.Failed)
+	if res.Imported == 0 {
+		msg := "没有成功导入的短剧"
+		if len(res.Failed) > 0 {
+			msg = res.Failed[0].Error
+		}
+		return nil, gerror.NewCode(errcode.CodeBadRequest, msg)
+	}
+	return res, nil
+}
+
+func applyDramaPlan(groups []DramaZipGroup, planJSON string) ([]DramaZipGroup, error) {
+	var plan DramaImportPlan
+	if err := json.Unmarshal([]byte(planJSON), &plan); err != nil {
+		return nil, fmt.Errorf("导入计划格式无效")
+	}
+	if len(plan.Items) == 0 {
+		return nil, fmt.Errorf("导入计划为空")
+	}
+	var out []DramaZipGroup
+	for _, it := range plan.Items {
+		title := strings.TrimSpace(it.Title)
+		if title == "" {
+			return nil, fmt.Errorf("计划中存在空标题")
+		}
+		src, ok := findPlanGroup(groups, it)
+		if !ok {
+			return nil, fmt.Errorf("计划中的短剧「%s」在压缩包中找不到对应文件", title)
+		}
+		g := src
+		g.Title = title
+		g.CoverPath = strings.ReplaceAll(strings.TrimSpace(it.Cover), "\\", "/")
+		if g.CoverPath != "" && !inGroup(g, g.CoverPath, true) {
+			return nil, fmt.Errorf("短剧「%s」的封面不在该目录内", title)
+		}
+		var videos []dramaFile
+		seen := map[int]int{}
+		for _, ep := range it.Episodes {
+			if ep.Seq < 1 {
+				return nil, fmt.Errorf("短剧「%s」存在无效集号", title)
+			}
+			seen[ep.Seq]++
+			if seen[ep.Seq] > 1 {
+				return nil, fmt.Errorf("短剧「%s」集号 %d 重复", title, ep.Seq)
+			}
+			p := strings.ReplaceAll(strings.TrimSpace(ep.Path), "\\", "/")
+			f, ok := findVideo(g, p)
+			if !ok {
+				return nil, fmt.Errorf("短剧「%s」找不到剧集文件", title)
+			}
+			f.Seq, f.Has = ep.Seq, true
+			if strings.TrimSpace(ep.Title) != "" {
+				f.Name = strings.TrimSpace(ep.Title)
+			}
+			videos = append(videos, f)
+		}
+		if len(videos) == 0 {
+			return nil, fmt.Errorf("短剧「%s」没有剧集", title)
+		}
+		g.Videos = videos
+		g.Warnings = nil
+		g.NeedsConfirm = false
+		out = append(out, g)
+	}
+	return out, nil
+}
+
+func findPlanGroup(groups []DramaZipGroup, it DramaImportPlanItem) (DramaZipGroup, bool) {
+	if len(it.Episodes) > 0 {
+		p := strings.ReplaceAll(strings.TrimSpace(it.Episodes[0].Path), "\\", "/")
+		for _, g := range groups {
+			if inGroup(g, p, false) {
+				return g, true
+			}
+		}
+	}
+	for _, g := range groups {
+		if g.Title == strings.TrimSpace(it.Title) {
+			return g, true
+		}
+	}
+	return DramaZipGroup{}, false
+}
+
+func inGroup(g DramaZipGroup, rel string, image bool) bool {
+	if image {
+		for _, c := range g.Covers {
+			if c.Path == rel {
+				return true
+			}
+		}
+		return false
+	}
+	for _, v := range g.Videos {
+		if v.Path == rel {
+			return true
+		}
+	}
+	return false
+}
+
+func findVideo(g DramaZipGroup, rel string) (dramaFile, bool) {
+	for _, v := range g.Videos {
+		if v.Path == rel {
+			return v, true
+		}
+	}
+	return dramaFile{}, false
+}
+
+func (s *sAsset) importOneDrama(ctx context.Context, g DramaZipGroup, files map[string]*zip.File, workDir string, lim DramaImportLimits, resume bool) (*v1.ImportDramasItem, error) {
+	if g.NeedsConfirm {
+		msg := "需要确认后才能导入"
+		if len(g.Warnings) > 0 {
+			msg = g.Warnings[0]
+		}
+		return nil, fmt.Errorf("%s", msg)
+	}
+	if strings.TrimSpace(g.Title) == "" || len(g.Videos) == 0 {
+		return nil, fmt.Errorf("缺少标题或剧集")
+	}
+
+	var series *domain.Asset
+	found, err := s.repo.FindDramasByTitle(ctx, g.Title)
+	if err != nil {
+		return nil, err
+	}
+	if len(found) > 1 {
+		return nil, fmt.Errorf("存在多部同名短剧「%s」，请改名后重试", g.Title)
+	}
+	created := false
+	if len(found) == 1 {
+		if !resume {
+			return nil, fmt.Errorf("已存在同名短剧「%s」。开启续传可追加未入库集数", g.Title)
+		}
+		series = &found[0]
+	} else {
+		code, err := s.repo.CreateDrama(ctx, g.Title, "", "", "", consts.UpdateStatusSerial)
+		if err != nil {
+			return nil, err
+		}
+		series, err = s.repo.GetByCode(ctx, code)
+		if err != nil || series == nil {
+			return nil, err
+		}
+		created = true
+	}
+
+	skipped := 0
+	imported := 0
+	for _, v := range g.Videos {
+		epTitle := strings.TrimSpace(v.Name)
+		if strings.Contains(epTitle, ".") && videoExt[strings.ToLower(path.Ext(epTitle))] {
+			epTitle = "第" + itoa(v.Seq) + "集"
+		}
+		if epTitle == "" {
+			epTitle = "第" + itoa(v.Seq) + "集"
+		}
+		code, isNew, err := s.repo.CreateEpisode(ctx, series.Pk, v.Seq, epTitle)
+		if err != nil {
+			return nil, err
+		}
+		ep, err := s.repo.GetByCode(ctx, code)
+		if err != nil || ep == nil {
+			return nil, err
+		}
+		if !isNew && ep.SourceKey != "" && (ep.Status == consts.AssetStatusReady || ep.Status == consts.AssetStatusProcessing) {
+			skipped++
+			continue
+		}
+		zf, ok := files[v.Path]
+		if !ok {
+			return nil, fmt.Errorf("压缩包缺少文件 %s", v.Path)
+		}
+		if err := s.putDramaSource(ctx, ep, zf, workDir, lim); err != nil {
+			return nil, err
+		}
+		if _, err := s.TriggerTranscode(ctx, ep.Code, 8); err != nil {
+			// 原片已入库，转码失败留给详情页重试
+			_ = err
+		}
+		imported++
+	}
+
+	if g.CoverPath != "" {
+		if zf, ok := files[g.CoverPath]; ok {
+			if err := s.putDramaSeriesCover(ctx, series, zf, lim); err != nil {
+				return nil, fmt.Errorf("封面失败: %w", err)
+			}
+		}
+	}
+	if err := s.refreshDramaCount(ctx, series.Pk); err != nil {
+		return nil, err
+	}
+	count := imported + skipped
+	if latest, e := s.repo.GetByCode(ctx, series.Code); e == nil && latest != nil {
+		count = latest.ChapterCount
+	}
+	item := &v1.ImportDramasItem{
+		Id: series.Code, Title: g.Title, ChapterCount: count,
+		Appended: !created, SkippedCount: skipped, ImportedCount: imported,
+	}
+	return item, nil
+}
+
+func (s *sAsset) putDramaSource(ctx context.Context, ep *domain.Asset, zf *zip.File, workDir string, lim DramaImportLimits) error {
+	tmp := filepath.Join(workDir, uuid.NewString())
+	if err := writeZipFileBounded(zf, tmp, lim.MaxFileBytes); err != nil {
+		return err
+	}
+	defer os.Remove(tmp)
+	f, err := os.Open(tmp)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	ext := strings.ToLower(path.Ext(zf.Name))
+	if !videoExt[ext] {
+		ext = ".mp4"
+	}
+	key := consts.SourceObjectPrefix(consts.KindDrama, ep.Code) + uuid.NewString() + ext
+	bucket := s.store.Bucket()
+	if err := s.store.PutObject(ctx, bucket, key, "video/mp4", f, st.Size()); err != nil {
+		return gerror.Wrap(err, "上传原片失败")
+	}
+	return s.repo.BindSource(ctx, ep.Pk, bucket, key)
+}
+
+func (s *sAsset) putDramaSeriesCover(ctx context.Context, series *domain.Asset, zf *zip.File, lim DramaImportLimits) error {
+	rc, err := zf.Open()
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	plain, err := io.ReadAll(io.LimitReader(rc, maxCoverBytes+1))
+	if err != nil {
+		return err
+	}
+	if int64(len(plain)) > maxCoverBytes {
+		return fmt.Errorf("封面不能超过 8MB")
+	}
+	enc, err := aesbnc.Encrypt(plain)
+	if err != nil {
+		return err
+	}
+	key := consts.DramaCoverKey(series.Code)
+	bucket := s.store.Bucket()
+	if err := s.store.PutObject(ctx, bucket, key, "application/octet-stream", bytes.NewReader(enc), int64(len(enc))); err != nil {
+		return err
+	}
+	if err := s.repo.UpdateCover(ctx, series.Pk, s.store.PublicURL(bucket, key), key, series.Kind); err != nil {
+		return err
+	}
+	return s.repo.BindSource(ctx, series.Pk, bucket, key)
+}
+
+func writeZipFileBounded(zf *zip.File, dest string, max int64) error {
+	if zf.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("拒绝符号链接: %s", zf.Name)
+	}
+	rc, err := zf.Open()
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	f, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	n, err := io.Copy(f, io.LimitReader(rc, max+1))
+	if err != nil {
+		return err
+	}
+	if n > max {
+		return fmt.Errorf("文件 %s 超过单文件上限 %s", zf.Name, humanBytes(max))
+	}
+	return nil
+}
