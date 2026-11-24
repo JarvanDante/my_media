@@ -289,28 +289,13 @@ func (s *sAsset) importOneDrama(ctx context.Context, g DramaZipGroup, files map[
 
 	var series *domain.Asset
 	created := false
-	targetID := strings.TrimSpace(g.TargetID)
 	if err := withDramaImportLease(ctx, lease, func(ctx context.Context) error {
-		if targetID != "" {
-			got, err := s.repo.GetByCode(ctx, targetID)
-			if err != nil {
-				return err
-			}
-			if got == nil || !consts.IsDramaSeries(got.Kind, got.ParentId) {
-				return fmt.Errorf("指定的续传短剧不存在或不是短剧整部")
-			}
-			series = got
-			return nil
-		}
-		code, err := s.repo.CreateDrama(ctx, g.Title, "", "", "", consts.UpdateStatusSerial)
+		got, isNew, err := dao.ResolveDramaImportSeries(ctx, lease.JobPK, g.ItemKey, g.Title, g.TargetID)
 		if err != nil {
 			return err
 		}
-		series, err = s.repo.GetByCode(ctx, code)
-		if err != nil || series == nil {
-			return err
-		}
-		created = true
+		series = got
+		created = isNew
 		return nil
 	}); err != nil {
 		return nil, err

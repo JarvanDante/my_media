@@ -153,6 +153,7 @@ type dramaFile struct {
 type DramaZipGroup struct {
 	Title        string
 	TargetID     string
+	ItemKey      string // 规范目录标识，同一任务内稳定；不用可编辑标题
 	Videos       []dramaFile
 	Covers       []dramaFile
 	CoverPath    string
@@ -376,7 +377,7 @@ func GroupDramaZip(files []zipMeta, zipBase string) ([]DramaZipGroup, error) {
 	for _, key := range order {
 		items := buckets[key]
 		title := groupTitle(key, zipBase)
-		g := DramaZipGroup{Title: title}
+		g := DramaZipGroup{Title: title, ItemKey: key}
 		for _, it := range items {
 			df := dramaFile{Path: it.Path, Name: path.Base(it.Path), Size: it.Size}
 			if videoExt[it.Ext] {

@@ -94,7 +94,11 @@ func (r *assetRepo) Create(ctx context.Context, title, coverUrl, remark string, 
 }
 
 func (r *assetRepo) GetByCode(ctx context.Context, code string) (*domain.Asset, error) {
-	row, err := g.DB().Model("media_asset").Ctx(ctx).Where("code", code).One()
+	return getAssetByCodeDB(g.DB(), ctx, code)
+}
+
+func getAssetByCodeDB(db gdb.DB, ctx context.Context, code string) (*domain.Asset, error) {
+	row, err := db.Model("media_asset").Ctx(ctx).Where("code", code).One()
 	if err != nil {
 		return nil, err
 	}

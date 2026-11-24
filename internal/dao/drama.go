@@ -15,6 +15,10 @@ import (
 )
 
 func (r *assetRepo) CreateDrama(ctx context.Context, title, coverUrl, remark, intro string, updateStatus int) (string, error) {
+	return createDramaDB(g.DB(), ctx, title, coverUrl, remark, intro, updateStatus)
+}
+
+func createDramaDB(db gdb.DB, ctx context.Context, title, coverUrl, remark, intro string, updateStatus int) (string, error) {
 	if updateStatus != consts.UpdateStatusEnded {
 		updateStatus = consts.UpdateStatusSerial
 	}
@@ -23,14 +27,14 @@ func (r *assetRepo) CreateDrama(ctx context.Context, title, coverUrl, remark, in
 		if err != nil {
 			return "", err
 		}
-		exist, err := g.DB().Model("media_asset").Ctx(ctx).Where("code", c).One()
+		exist, err := db.Model("media_asset").Ctx(ctx).Where("code", c).One()
 		if err != nil {
 			return "", err
 		}
 		if !exist.IsEmpty() {
 			continue
 		}
-		_, err = g.DB().Model("media_asset").Ctx(ctx).Data(g.Map{
+		_, err = db.Model("media_asset").Ctx(ctx).Data(g.Map{
 			"code":             c,
 			"title":            title,
 			"cover_url":        coverUrl,
@@ -58,11 +62,11 @@ func (r *assetRepo) UpdateDrama(ctx context.Context, pk int64, title, remark, in
 		updateStatus = consts.UpdateStatusSerial
 	}
 	_, err := g.DB().Model("media_asset").Ctx(ctx).Where("id", pk).Data(g.Map{
-		"title":          title,
-		"remark":         remark,
-		"intro":          intro,
-		"update_status":  updateStatus,
-		"updated_at":     gtime.Now(),
+		"title":         title,
+		"remark":        remark,
+		"intro":         intro,
+		"update_status": updateStatus,
+		"updated_at":    gtime.Now(),
 	}).Update()
 	return err
 }
