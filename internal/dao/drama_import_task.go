@@ -55,27 +55,47 @@ type DramaImportUpload struct {
 }
 
 type DramaImportJob struct {
-	Pk          int64
-	Code        string
-	UploadID    int64
-	UploadCode  string
-	Bucket      string
-	PackKey     string
-	PlanJSON    string
-	Status      string
-	Stage       string
-	Progress    int
-	Message     string
-	Error       string
-	ResultJSON  string
-	Attempts    int
-	MaxAttempts int
-	HeartbeatAt *time.Time
-	StartedAt   *time.Time
-	FinishedAt  *time.Time
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	Pk              int64
+	Code            string
+	UploadID        int64
+	UploadCode      string
+	Bucket          string
+	PackKey         string
+	PlanJSON        string
+	Status          string
+	Stage           string
+	Progress        int
+	Message         string
+	Error           string
+	ResultJSON      string
+	Attempts        int
+	MaxAttempts     int
+	Owner           string
+	LeaseGeneration int64
+	LeaseUntil      *time.Time
+	HeartbeatAt     *time.Time
+	StartedAt       *time.Time
+	FinishedAt      *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
+
+// DramaJobLease 一次成功认领后的执行租约，所有进度/完成/清理必须带上 fencing。
+type DramaJobLease struct {
+	JobPK      int64
+	Owner      string
+	Generation int64
+}
+
+const (
+	// DefaultDramaJobLeaseTTL 执行租约时长；周期续租、关闭释放后的可回收时刻与误回收判断共用此阈值。
+	DefaultDramaJobLeaseTTL = 30 * time.Second
+	// dramaImportClaimLockKey 认领短事务内的 PG 事务级咨询锁，用于配额与选任务原子化。
+	dramaImportClaimLockKey int64 = 8520140916
+)
+
+// ErrDramaJobLeaseLost 当前 owner/generation 已不再持有该任务的执行租约。
+var ErrDramaJobLeaseLost = errors.New("drama import job lease lost")
 
 func newImportCode() (string, error) {
 	for i := 0; i < 8; i++ {
@@ -376,22 +396,82 @@ func GetDramaImportJobByCode(ctx context.Context, code string) (*DramaImportJob,
 	return &j, nil
 }
 
-func CountRunningDramaJobs(ctx context.Context, stale time.Duration) (int, error) {
-	cut := gtime.NewFromTime(time.Now().Add(-stale))
-	n, err := g.DB().Model("drama_import_job").Ctx(ctx).
+func DramaJobLeaseHeld(status string, until *time.Time, now time.Time) bool {
+	return status == DramaJobRunning && until != nil && until.After(now)
+}
+
+func DramaJobClaimable(status string, until *time.Time, attempts, maxAttempts int, now time.Time) bool {
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+	if attempts >= maxAttempts {
+		return false
+	}
+	if status == DramaJobQueued {
+		return true
+	}
+	if status == DramaJobRunning && !DramaJobLeaseHeld(status, until, now) {
+		return true
+	}
+	return false
+}
+
+func DramaJobLeaseFenced(jobOwner, reqOwner string, jobGen, reqGen int64, status string) bool {
+	return jobOwner != "" && jobOwner == reqOwner && jobGen == reqGen && status == DramaJobRunning
+}
+
+func CountRunningDramaJobs(ctx context.Context) (int, error) {
+	return countLeasedRunningJobs(g.DB(), ctx)
+}
+
+func countLeasedRunningJobs(db gdb.DB, ctx context.Context) (int, error) {
+	n, err := db.Model("drama_import_job").Ctx(ctx).
 		Where("status", DramaJobRunning).
-		Where("heartbeat_at >=", cut).
+		Where("lease_until IS NOT NULL").
+		Where("lease_until >", gtime.Now()).
 		Count()
 	return n, err
 }
 
-func ClaimDramaImportJob(ctx context.Context, stale time.Duration) (*DramaImportJob, error) {
+func ClaimDramaImportJob(ctx context.Context, owner string, leaseTTL time.Duration, maxRunning int) (*DramaImportJob, *DramaJobLease, error) {
+	return claimDramaImportJobDB(g.DB(), ctx, owner, leaseTTL, maxRunning)
+}
+
+func claimDramaImportJobDB(db gdb.DB, ctx context.Context, owner string, leaseTTL time.Duration, maxRunning int) (*DramaImportJob, *DramaJobLease, error) {
+	owner = strings.TrimSpace(owner)
+	if owner == "" {
+		return nil, nil, errors.New("missing job lease owner")
+	}
+	if len(owner) > 64 {
+		owner = owner[:64]
+	}
+	if leaseTTL <= 0 {
+		leaseTTL = DefaultDramaJobLeaseTTL
+	}
+	if maxRunning <= 0 {
+		maxRunning = 1
+	}
 	var out *DramaImportJob
-	err := g.DB().Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
-		cut := gtime.NewFromTime(time.Now().Add(-stale))
+	var lease *DramaJobLease
+	err := db.Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
+		if _, err := tx.Exec("SELECT pg_advisory_xact_lock(?)", dramaImportClaimLockKey); err != nil {
+			return err
+		}
+		n, err := tx.Model("drama_import_job").Ctx(ctx).
+			Where("status", DramaJobRunning).
+			Where("lease_until IS NOT NULL").
+			Where("lease_until >", gtime.Now()).
+			Count()
+		if err != nil {
+			return err
+		}
+		if n >= maxRunning {
+			return nil
+		}
+		now := gtime.Now()
 		row, err := tx.Model("drama_import_job").Ctx(ctx).
-			Where("(status = ? OR (status = ? AND (heartbeat_at IS NULL OR heartbeat_at < ?)))", DramaJobQueued, DramaJobRunning, cut).
 			Where("attempts < max_attempts").
+			Where("(status = ? OR (status = ? AND (lease_until IS NULL OR lease_until <= ?)))", DramaJobQueued, DramaJobRunning, now).
 			OrderAsc("id").
 			LockUpdate().
 			Limit(1).
@@ -403,59 +483,141 @@ func ClaimDramaImportJob(ctx context.Context, stale time.Duration) (*DramaImport
 			return nil
 		}
 		j := mapDramaJob(row.Map())
-		now := gtime.Now()
+		until := gtime.NewFromTime(time.Now().Add(leaseTTL))
 		started := now
-		if j.StartedAt == nil {
-			// keep first start? set if empty
-		} else {
+		if j.StartedAt != nil {
 			started = gtime.NewFromTime(*j.StartedAt)
 		}
-		_, err = tx.Model("drama_import_job").Ctx(ctx).Where("id", j.Pk).Data(g.Map{
-			"status":       DramaJobRunning,
-			"stage":        "running",
-			"attempts":     j.Attempts + 1,
-			"heartbeat_at": now,
-			"started_at":   started,
-			"updated_at":   now,
-			"error":        "",
-		}).Update()
+		nextGen := j.LeaseGeneration + 1
+		r, err := tx.Model("drama_import_job").Ctx(ctx).
+			Where("id", j.Pk).
+			Where("lease_generation", j.LeaseGeneration).
+			Where("attempts < max_attempts").
+			Where("(status = ? OR (status = ? AND (lease_until IS NULL OR lease_until <= ?)))", DramaJobQueued, DramaJobRunning, now).
+			Data(g.Map{
+				"status":           DramaJobRunning,
+				"stage":            "running",
+				"attempts":         j.Attempts + 1,
+				"owner":            owner,
+				"lease_generation": nextGen,
+				"lease_until":      until,
+				"heartbeat_at":     now,
+				"started_at":       started,
+				"updated_at":       now,
+				"finished_at":      nil,
+				"error":            "",
+			}).Update()
 		if err != nil {
 			return err
+		}
+		affected, _ := r.RowsAffected()
+		if affected == 0 {
+			return nil
 		}
 		j.Status = DramaJobRunning
 		j.Stage = "running"
 		j.Attempts = j.Attempts + 1
-		t := now.Time
-		j.HeartbeatAt = &t
+		j.Owner = owner
+		j.LeaseGeneration = nextGen
+		ut := until.Time
+		j.LeaseUntil = &ut
+		ht := now.Time
+		j.HeartbeatAt = &ht
 		if j.StartedAt == nil {
-			j.StartedAt = &t
+			j.StartedAt = &ht
 		}
 		out = &j
+		lease = &DramaJobLease{JobPK: j.Pk, Owner: owner, Generation: nextGen}
 		return nil
 	})
-	return out, err
+	return out, lease, err
 }
 
-func HeartbeatDramaImportJob(ctx context.Context, id int64, stage string, progress int, message string) error {
+func leaseFenceWhere(m *gdb.Model, lease DramaJobLease) *gdb.Model {
+	return m.Where("id", lease.JobPK).
+		Where("owner", lease.Owner).
+		Where("lease_generation", lease.Generation).
+		Where("status", DramaJobRunning)
+}
+
+func rowsOrLeaseLost(r sqlResult, err error) error {
+	if err != nil {
+		return err
+	}
+	n, _ := r.RowsAffected()
+	if n == 0 {
+		return ErrDramaJobLeaseLost
+	}
+	return nil
+}
+
+type sqlResult interface {
+	RowsAffected() (int64, error)
+}
+
+func RenewDramaImportJobLease(ctx context.Context, lease DramaJobLease, ttl time.Duration) error {
+	return renewDramaImportJobLeaseDB(g.DB(), ctx, lease, ttl)
+}
+
+func renewDramaImportJobLeaseDB(db gdb.DB, ctx context.Context, lease DramaJobLease, ttl time.Duration) error {
+	if ttl <= 0 {
+		ttl = DefaultDramaJobLeaseTTL
+	}
+	now := gtime.Now()
+	until := gtime.NewFromTime(time.Now().Add(ttl))
+	r, err := leaseFenceWhere(db.Model("drama_import_job").Ctx(ctx), lease).Data(g.Map{
+		"lease_until":  until,
+		"heartbeat_at": now,
+		"updated_at":   now,
+	}).Update()
+	return rowsOrLeaseLost(r, err)
+}
+
+func HeartbeatDramaImportJob(ctx context.Context, lease DramaJobLease, stage string, progress int, message string) error {
+	return heartbeatDramaImportJobDB(g.DB(), ctx, lease, stage, progress, message, DefaultDramaJobLeaseTTL)
+}
+
+func heartbeatDramaImportJobDB(db gdb.DB, ctx context.Context, lease DramaJobLease, stage string, progress int, message string, ttl time.Duration) error {
 	if progress < 0 {
 		progress = 0
 	}
 	if progress > 100 {
 		progress = 100
 	}
-	_, err := g.DB().Model("drama_import_job").Ctx(ctx).Where("id", id).Data(g.Map{
-		"stage":        stage,
+	if ttl <= 0 {
+		ttl = DefaultDramaJobLeaseTTL
+	}
+	now := gtime.Now()
+	until := gtime.NewFromTime(time.Now().Add(ttl))
+	data := g.Map{
+		"lease_until":  until,
+		"heartbeat_at": now,
+		"updated_at":   now,
 		"progress":     progress,
-		"message":      message,
-		"heartbeat_at": gtime.Now(),
-		"updated_at":   gtime.Now(),
-	}).Update()
-	return err
+	}
+	if strings.TrimSpace(stage) != "" {
+		data["stage"] = stage
+	}
+	if message != "" {
+		data["message"] = message
+	}
+	r, err := leaseFenceWhere(db.Model("drama_import_job").Ctx(ctx), lease).Data(data).Update()
+	return rowsOrLeaseLost(r, err)
 }
 
-func FinishDramaImportJob(ctx context.Context, id int64, status, stage, message, errMsg, resultJSON string, progress int) error {
+func FinishDramaImportJob(ctx context.Context, lease DramaJobLease, status, stage, message, errMsg, resultJSON string, progress int) error {
+	return finishDramaImportJobDB(g.DB(), ctx, lease, status, stage, message, errMsg, resultJSON, progress)
+}
+
+func finishDramaImportJobDB(db gdb.DB, ctx context.Context, lease DramaJobLease, status, stage, message, errMsg, resultJSON string, progress int) error {
+	if progress < 0 {
+		progress = 0
+	}
+	if progress > 100 {
+		progress = 100
+	}
 	now := gtime.Now()
-	_, err := g.DB().Model("drama_import_job").Ctx(ctx).Where("id", id).Data(g.Map{
+	r, err := leaseFenceWhere(db.Model("drama_import_job").Ctx(ctx), lease).Data(g.Map{
 		"status":       status,
 		"stage":        stage,
 		"message":      message,
@@ -465,41 +627,88 @@ func FinishDramaImportJob(ctx context.Context, id int64, status, stage, message,
 		"finished_at":  now,
 		"updated_at":   now,
 		"heartbeat_at": now,
+		"owner":        "",
+		"lease_until":  nil,
 	}).Update()
+	return rowsOrLeaseLost(r, err)
+}
+
+func ReleaseDramaImportJobLease(ctx context.Context, lease DramaJobLease) error {
+	return releaseDramaImportJobLeaseDB(g.DB(), ctx, lease)
+}
+
+func releaseDramaImportJobLeaseDB(db gdb.DB, ctx context.Context, lease DramaJobLease) error {
+	now := gtime.Now()
+	// 立即到期，回收阈值仍是 lease_until；代数不变，旧 owner 的后续 finish/heartbeat/cleanup 会失败。
+	r, err := leaseFenceWhere(db.Model("drama_import_job").Ctx(ctx), lease).Data(g.Map{
+		"lease_until":  now,
+		"heartbeat_at": now,
+		"updated_at":   now,
+	}).Update()
+	return rowsOrLeaseLost(r, err)
+}
+
+func CancelQueuedDramaImportJob(ctx context.Context, id int64, message string) error {
+	now := gtime.Now()
+	_, err := g.DB().Model("drama_import_job").Ctx(ctx).
+		Where("id", id).
+		Where("status", DramaJobQueued).
+		Data(g.Map{
+			"status":      DramaJobCanceled,
+			"stage":       "canceled",
+			"message":     message,
+			"error":       message,
+			"finished_at": now,
+			"updated_at":  now,
+			"owner":       "",
+			"lease_until": nil,
+		}).Update()
 	return err
 }
 
 func RequeueDramaImportJob(ctx context.Context, id int64) error {
-	_, err := g.DB().Model("drama_import_job").Ctx(ctx).Where("id", id).Data(g.Map{
-		"status":      DramaJobQueued,
-		"stage":       "queued",
-		"error":       "",
-		"attempts":    0,
-		"finished_at": nil,
-		"updated_at":  gtime.Now(),
-	}).Update()
+	_, err := g.DB().Model("drama_import_job").Ctx(ctx).
+		Where("id", id).
+		WhereIn("status", []string{DramaJobFailed, DramaJobCanceled}).
+		Data(g.Map{
+			"status":      DramaJobQueued,
+			"stage":       "queued",
+			"error":       "",
+			"attempts":    0,
+			"finished_at": nil,
+			"updated_at":  gtime.Now(),
+			"owner":       "",
+			"lease_until": nil,
+		}).Update()
 	return err
 }
 
 func UpdateDramaImportJobResult(ctx context.Context, id int64, status, stage, message, resultJSON string, progress int) error {
-	_, err := g.DB().Model("drama_import_job").Ctx(ctx).Where("id", id).Data(g.Map{
-		"status":       status,
-		"stage":        stage,
-		"message":      message,
-		"result_json":  resultJSON,
-		"progress":     progress,
-		"updated_at":   gtime.Now(),
-		"heartbeat_at": gtime.Now(),
-	}).Update()
+	if progress < 0 {
+		progress = 0
+	}
+	if progress > 100 {
+		progress = 100
+	}
+	// import_done 之后的转码进度刷新不属于执行租约；禁止回写 running。
+	_, err := g.DB().Model("drama_import_job").Ctx(ctx).Where("id", id).
+		Where("status", DramaJobImportDone).
+		Data(g.Map{
+			"status":      status,
+			"stage":       stage,
+			"message":     message,
+			"result_json": resultJSON,
+			"progress":    progress,
+			"updated_at":  gtime.Now(),
+		}).Update()
 	return err
 }
 
-func FailExhaustedStaleDramaJobs(ctx context.Context, stale time.Duration) error {
-	cut := gtime.NewFromTime(time.Now().Add(-stale))
+func FailExhaustedStaleDramaJobs(ctx context.Context) error {
 	now := gtime.Now()
 	_, err := g.DB().Model("drama_import_job").Ctx(ctx).
 		Where("status", DramaJobRunning).
-		Where("(heartbeat_at IS NULL OR heartbeat_at < ?)", cut).
+		Where("(lease_until IS NULL OR lease_until <= ?)", now).
 		Where("attempts >= max_attempts").
 		Data(g.Map{
 			"status":      DramaJobFailed,
@@ -508,6 +717,8 @@ func FailExhaustedStaleDramaJobs(ctx context.Context, stale time.Duration) error
 			"message":     "任务中断且已达最大重试次数",
 			"finished_at": now,
 			"updated_at":  now,
+			"owner":       "",
+			"lease_until": nil,
 		}).Update()
 	return err
 }
@@ -591,8 +802,10 @@ func mapDramaJob(m map[string]interface{}) DramaImportJob {
 		PlanJSON: toStr(m["plan_json"]), Status: toStr(m["status"]), Stage: toStr(m["stage"]),
 		Progress: toInt(m["progress"]), Message: toStr(m["message"]), Error: toStr(m["error"]),
 		ResultJSON: toStr(m["result_json"]), Attempts: toInt(m["attempts"]),
-		MaxAttempts: toInt(m["max_attempts"]),
+		MaxAttempts: toInt(m["max_attempts"]), Owner: toStr(m["owner"]),
+		LeaseGeneration: toInt64(m["lease_generation"]),
 	}
+	j.LeaseUntil = toTime(m["lease_until"])
 	j.HeartbeatAt = toTime(m["heartbeat_at"])
 	j.StartedAt = toTime(m["started_at"])
 	j.FinishedAt = toTime(m["finished_at"])

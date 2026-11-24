@@ -326,7 +326,7 @@ func (s *sAsset) AbortDramaUpload(ctx context.Context, id string) (*v1.AbortDram
 	}
 	if up.JobCode != "" {
 		if job, _ := dao.GetDramaImportJobByCode(ctx, up.JobCode); job != nil && job.Status == dao.DramaJobQueued {
-			_ = dao.FinishDramaImportJob(ctx, job.Pk, dao.DramaJobCanceled, "canceled", "上传会话已取消", "", job.ResultJSON, job.Progress)
+			_ = dao.CancelQueuedDramaImportJob(ctx, job.Pk, "上传会话已取消")
 		}
 	}
 	return &v1.AbortDramaUploadRes{Id: up.Code, Deleted: deleted}, nil

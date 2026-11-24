@@ -3,11 +3,14 @@ package logic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gogf/gf/v2/errors/gerror"
@@ -17,9 +20,8 @@ import (
 	"github.com/JarvanDante/my_media/internal/consts"
 	"github.com/JarvanDante/my_media/internal/dao"
 	"github.com/JarvanDante/my_media/internal/shared/errcode"
+	"github.com/JarvanDante/my_media/internal/shared/kit"
 )
-
-const dramaJobStale = 5 * time.Minute
 
 type dramaJobResult struct {
 	Imported    int                   `json:"imported"`
@@ -172,7 +174,93 @@ func (s *sAsset) retryDramaTranscode(ctx context.Context, job *dao.DramaImportJo
 	return dao.UpdateDramaImportJobResult(ctx, job.Pk, dao.DramaJobImportDone, "transcoding", "已补投转码任务", job.ResultJSON, 100)
 }
 
+func newDramaImportWorkerID() string {
+	id, err := kit.NewPublicID()
+	if err != nil || id == "" {
+		id = fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	s := fmt.Sprintf("%s-%d", id, os.Getpid())
+	if len(s) > 64 {
+		s = s[:64]
+	}
+	return s
+}
+
+func dramaJobLeaseRenewInterval(ttl time.Duration) time.Duration {
+	if ttl <= 0 {
+		ttl = dao.DefaultDramaJobLeaseTTL
+	}
+	d := ttl / 3
+	if d < 20*time.Millisecond {
+		return 20 * time.Millisecond
+	}
+	return d
+}
+
+func canCleanupDramaImportTemp(finishErr error, leaseLost bool) bool {
+	return finishErr == nil && !leaseLost
+}
+
+type dramaLeaseOps struct {
+	TTL       time.Duration
+	Renew     func(ctx context.Context, lease dao.DramaJobLease, ttl time.Duration) error
+	Heartbeat func(ctx context.Context, lease dao.DramaJobLease, stage string, progress int, message string) error
+	Finish    func(ctx context.Context, lease dao.DramaJobLease, status, stage, message, errMsg, resultJSON string, progress int) error
+	Release   func(ctx context.Context, lease dao.DramaJobLease) error
+}
+
+func defaultDramaLeaseOps() dramaLeaseOps {
+	return dramaLeaseOps{
+		TTL:       dao.DefaultDramaJobLeaseTTL,
+		Renew:     dao.RenewDramaImportJobLease,
+		Heartbeat: dao.HeartbeatDramaImportJob,
+		Finish:    dao.FinishDramaImportJob,
+		Release:   dao.ReleaseDramaImportJobLease,
+	}
+}
+
+// runWithDramaJobLease 在长操作期间按 TTL/3 续租，不持有认领事务。续租失败立即取消工作上下文。
+func runWithDramaJobLease(parent context.Context, lease dao.DramaJobLease, ops dramaLeaseOps, work func(ctx context.Context) error) (leaseLost bool, err error) {
+	if ops.TTL <= 0 {
+		ops.TTL = dao.DefaultDramaJobLeaseTTL
+	}
+	if ops.Renew == nil {
+		ops.Renew = dao.RenewDramaImportJobLease
+	}
+	workCtx, cancelWork := context.WithCancel(parent)
+	defer cancelWork()
+	var lost atomic.Bool
+	done := make(chan struct{})
+	var stopOnce sync.Once
+	go func() {
+		defer close(done)
+		t := time.NewTicker(dramaJobLeaseRenewInterval(ops.TTL))
+		defer t.Stop()
+		for {
+			select {
+			case <-workCtx.Done():
+				return
+			case <-t.C:
+				if rerr := ops.Renew(context.Background(), lease, ops.TTL); rerr != nil {
+					lost.Store(true)
+					cancelWork()
+					return
+				}
+			}
+		}
+	}()
+	defer func() {
+		cancelWork()
+		stopOnce.Do(func() {})
+		<-done
+	}()
+	err = work(workCtx)
+	leaseLost = lost.Load() || errors.Is(err, dao.ErrDramaJobLeaseLost)
+	return leaseLost, err
+}
+
 func (s *sAsset) RunDramaImportWorker(ctx context.Context) {
+	owner := newDramaImportWorkerID()
 	t := time.NewTicker(2 * time.Second)
 	defer t.Stop()
 	for {
@@ -180,35 +268,31 @@ func (s *sAsset) RunDramaImportWorker(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := s.tickDramaImport(ctx); err != nil {
+			if err := s.tickDramaImport(ctx, owner); err != nil {
 				g.Log().Warningf(ctx, "drama import worker: %v", err)
 			}
 		}
 	}
 }
 
-func (s *sAsset) tickDramaImport(ctx context.Context) error {
+func (s *sAsset) tickDramaImport(ctx context.Context, owner string) error {
 	s.cleanupExpiredDramaUploads(ctx)
-	if err := dao.FailExhaustedStaleDramaJobs(ctx, dramaJobStale); err != nil {
+	if err := dao.FailExhaustedStaleDramaJobs(ctx); err != nil {
 		g.Log().Warningf(ctx, "fail exhausted drama jobs: %v", err)
 	}
 	s.refreshImportDoneJobs(ctx)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	lim := dramaImportLimits(ctx)
-	running, err := dao.CountRunningDramaJobs(ctx, dramaJobStale)
+	job, lease, err := dao.ClaimDramaImportJob(ctx, owner, dao.DefaultDramaJobLeaseTTL, lim.MaxRunningJobs)
 	if err != nil {
 		return err
 	}
-	if running >= lim.MaxRunningJobs {
+	if job == nil || lease == nil {
 		return nil
 	}
-	job, err := dao.ClaimDramaImportJob(ctx, dramaJobStale)
-	if err != nil {
-		return err
-	}
-	if job == nil {
-		return nil
-	}
-	s.runDramaImportJob(ctx, job, lim)
+	s.runDramaImportJob(ctx, job, *lease, lim)
 	return nil
 }
 
@@ -252,51 +336,68 @@ func (s *sAsset) refreshImportDoneJobs(ctx context.Context) {
 	}
 }
 
-func (s *sAsset) runDramaImportJob(parent context.Context, job *dao.DramaImportJob, lim DramaImportLimits) {
+func (s *sAsset) runDramaImportJob(parent context.Context, job *dao.DramaImportJob, lease dao.DramaJobLease, lim DramaImportLimits) {
 	timeout := time.Duration(lim.JobTimeoutSec) * time.Second
 	if timeout <= 0 {
 		timeout = time.Duration(defaultJobTimeoutSec) * time.Second
 	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
+	ops := defaultDramaLeaseOps()
 
-	_ = dao.HeartbeatDramaImportJob(ctx, job.Pk, "validating", 5, "正在校验整包")
-	if s.store == nil {
-		s.failDramaJob(ctx, job, "MinIO 未初始化", 5)
+	lost, err := runWithDramaJobLease(ctx, lease, ops, func(workCtx context.Context) error {
+		return s.execDramaImportJob(workCtx, job, lease, ops, lim)
+	})
+	if lost {
+		g.Log().Warningf(parent, "drama import job %s lost lease, skip finish/cleanup", job.Code)
 		return
 	}
-	if job.PackKey == "" || !strings.HasPrefix(job.PackKey, consts.PrefixDrama+"import/"+job.UploadCode+"/") {
-		s.failDramaJob(ctx, job, "整包对象不属于本任务会话", 5)
+	if err != nil && parent.Err() != nil && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if rerr := ops.Release(context.Background(), lease); rerr != nil && !errors.Is(rerr, dao.ErrDramaJobLeaseLost) {
+			g.Log().Warningf(parent, "release drama job lease %s: %v", job.Code, rerr)
+		}
 		return
+	}
+	if err != nil {
+		g.Log().Warningf(parent, "drama import job %s: %v", job.Code, err)
+	}
+}
+
+func (s *sAsset) execDramaImportJob(ctx context.Context, job *dao.DramaImportJob, lease dao.DramaJobLease, ops dramaLeaseOps, lim DramaImportLimits) error {
+	if err := ops.Heartbeat(context.Background(), lease, "validating", 5, "正在校验整包"); err != nil {
+		return err
+	}
+	if s.store == nil {
+		return s.failDramaJob(ctx, lease, job, ops, "MinIO 未初始化", 5)
+	}
+	if job.PackKey == "" || !strings.HasPrefix(job.PackKey, consts.PrefixDrama+"import/"+job.UploadCode+"/") {
+		return s.failDramaJob(ctx, lease, job, ops, "整包对象不属于本任务会话", 5)
 	}
 	size, err := s.store.ObjectSize(ctx, job.Bucket, job.PackKey)
 	if err != nil {
-		s.failDramaJob(ctx, job, "整包不存在或无法读取", 5)
-		return
+		return s.failDramaJob(ctx, lease, job, ops, "整包不存在或无法读取", 5)
 	}
 	if size > lim.MaxZipBytes {
-		s.failDramaJob(ctx, job, fmt.Sprintf("压缩包大小 %s 超过上限 %s", humanBytes(size), humanBytes(lim.MaxZipBytes)), 5)
-		return
+		return s.failDramaJob(ctx, lease, job, ops, fmt.Sprintf("压缩包大小 %s 超过上限 %s", humanBytes(size), humanBytes(lim.MaxZipBytes)), 5)
 	}
 	if err := ensureDiskFree(os.TempDir(), lim.MinFreeBytes+size); err != nil {
-		s.failDramaJob(ctx, job, err.Error(), 5)
-		return
+		return s.failDramaJob(ctx, lease, job, ops, err.Error(), 5)
 	}
-
-	_ = dao.HeartbeatDramaImportJob(ctx, job.Pk, "extracting", 15, "正在下载整包")
+	if err := ops.Heartbeat(context.Background(), lease, "extracting", 15, "正在下载整包"); err != nil {
+		return err
+	}
 	dir, err := os.MkdirTemp("", "drama-job-")
 	if err != nil {
-		s.failDramaJob(ctx, job, err.Error(), 15)
-		return
+		return s.failDramaJob(ctx, lease, job, ops, err.Error(), 15)
 	}
 	defer os.RemoveAll(dir)
 	packPath := filepath.Join(dir, "pack.zip")
 	if err := s.downloadDramaPack(ctx, job.Bucket, job.PackKey, packPath, lim.MaxZipBytes); err != nil {
-		s.failDramaJob(ctx, job, err.Error(), 15)
-		return
+		return s.failDramaJob(ctx, lease, job, ops, err.Error(), 15)
 	}
-
-	_ = dao.HeartbeatDramaImportJob(ctx, job.Pk, "importing", 40, "正在解压入库")
+	if err := ops.Heartbeat(context.Background(), lease, "importing", 40, "正在解压入库"); err != nil {
+		return err
+	}
 	out, err := s.importDramasFromPack(ctx, packPath, "pack.zip", job.PlanJSON)
 	result := dramaJobResult{}
 	if out != nil {
@@ -308,40 +409,58 @@ func (s *sAsset) runDramaImportJob(parent context.Context, job *dao.DramaImportJ
 	raw, _ := json.Marshal(result)
 	if err != nil && result.Imported == 0 {
 		msg := err.Error()
+		if ctx.Err() != nil && !errors.Is(ctx.Err(), context.DeadlineExceeded) && !errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
 		if ctxImportCanceled(ctx) != nil {
 			msg = "超时/取消，结果可能部分完成，请刷新核对后再决定重试"
 		}
-		if ferr := dao.FinishDramaImportJob(parent, job.Pk, dao.DramaJobFailed, "failed", msg, msg, string(raw), 40); ferr != nil {
-			g.Log().Warningf(parent, "finish drama job %s: %v (import err: %s)", job.Code, ferr, msg)
+		ferr := ops.Finish(context.Background(), lease, dao.DramaJobFailed, "failed", msg, msg, string(raw), 40)
+		if !canCleanupDramaImportTemp(ferr, errors.Is(ferr, dao.ErrDramaJobLeaseLost)) {
+			if ferr != nil {
+				g.Log().Warningf(ctx, "finish drama job %s: %v (import err: %s)", job.Code, ferr, msg)
+			}
+			return ferr
 		}
-		return
+		return nil
 	}
 	msg := "入库完成，转码进行中"
 	if result.FailedCount > 0 {
 		msg = "入库完成，部分失败或转码投递失败，可按步重试"
 	}
-	if ferr := dao.FinishDramaImportJob(parent, job.Pk, dao.DramaJobImportDone, "transcoding", msg, "", string(raw), 100); ferr != nil {
-		g.Log().Warningf(parent, "finish drama job %s: %v", job.Code, ferr)
-		return
+	ferr := ops.Finish(context.Background(), lease, dao.DramaJobImportDone, "transcoding", msg, "", string(raw), 100)
+	if !canCleanupDramaImportTemp(ferr, errors.Is(ferr, dao.ErrDramaJobLeaseLost)) {
+		if ferr != nil {
+			g.Log().Warningf(ctx, "finish drama job %s: %v", job.Code, ferr)
+		}
+		return ferr
 	}
-	// 入库完成后仅清理本任务临时整包，不删用户媒资
 	if strings.HasPrefix(job.PackKey, consts.PrefixDrama+"import/"+job.UploadCode+"/") {
-		if err := s.store.RemoveObject(parent, job.Bucket, job.PackKey); err != nil {
-			g.Log().Warningf(parent, "cleanup pack %s: %v", job.PackKey, err)
+		if err := s.store.RemoveObject(context.Background(), job.Bucket, job.PackKey); err != nil {
+			g.Log().Warningf(ctx, "cleanup pack %s: %v", job.PackKey, err)
 		}
-		if _, err := s.store.RemovePrefix(parent, job.Bucket, consts.DramaImportPrefix(job.UploadCode)); err != nil {
-			g.Log().Warningf(parent, "cleanup import prefix %s: %v", job.UploadCode, err)
+		if _, err := s.store.RemovePrefix(context.Background(), job.Bucket, consts.DramaImportPrefix(job.UploadCode)); err != nil {
+			g.Log().Warningf(ctx, "cleanup import prefix %s: %v", job.UploadCode, err)
 		}
 	}
+	return nil
 }
 
-func (s *sAsset) failDramaJob(ctx context.Context, job *dao.DramaImportJob, msg string, progress int) {
+func (s *sAsset) failDramaJob(ctx context.Context, lease dao.DramaJobLease, job *dao.DramaImportJob, ops dramaLeaseOps, msg string, progress int) error {
+	if ctx.Err() != nil && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return ctx.Err()
+	}
 	if ctxImportCanceled(ctx) != nil {
 		msg = "超时/取消，结果可能部分完成，请刷新核对后再决定重试"
 	}
-	if err := dao.FinishDramaImportJob(context.Background(), job.Pk, dao.DramaJobFailed, "failed", msg, msg, job.ResultJSON, progress); err != nil {
-		g.Log().Warningf(ctx, "fail drama job %s: %v (reason: %s)", job.Code, err, msg)
+	ferr := ops.Finish(context.Background(), lease, dao.DramaJobFailed, "failed", msg, msg, job.ResultJSON, progress)
+	if errors.Is(ferr, dao.ErrDramaJobLeaseLost) {
+		return ferr
 	}
+	if ferr != nil {
+		g.Log().Warningf(ctx, "fail drama job %s: %v (reason: %s)", job.Code, ferr, msg)
+	}
+	return ferr
 }
 
 func (s *sAsset) downloadDramaPack(ctx context.Context, bucket, key, dest string, max int64) error {
@@ -358,7 +477,7 @@ func (s *sAsset) downloadDramaPack(ctx context.Context, bucket, key, dest string
 		return err
 	}
 	defer f.Close()
-	n, err := io.Copy(f, io.LimitReader(rc, max+1))
+	n, err := copyWithContext(ctx, f, io.LimitReader(rc, max+1))
 	if err != nil {
 		return err
 	}
@@ -366,4 +485,33 @@ func (s *sAsset) downloadDramaPack(ctx context.Context, bucket, key, dest string
 		return fmt.Errorf("压缩包大小超过上限 %s", humanBytes(max))
 	}
 	return nil
+}
+
+func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
+	buf := make([]byte, 32*1024)
+	var written int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return written, err
+		}
+		nr, er := src.Read(buf)
+		if nr > 0 {
+			nw, ew := dst.Write(buf[:nr])
+			if nw > 0 {
+				written += int64(nw)
+			}
+			if ew != nil {
+				return written, ew
+			}
+			if nr != nw {
+				return written, io.ErrShortWrite
+			}
+		}
+		if er != nil {
+			if er == io.EOF {
+				return written, nil
+			}
+			return written, er
+		}
+	}
 }
