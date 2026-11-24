@@ -91,9 +91,23 @@ type DramaJobLease struct {
 const (
 	// DefaultDramaJobLeaseTTL 执行租约时长；周期续租、关闭释放后的可回收时刻与误回收判断共用此阈值。
 	DefaultDramaJobLeaseTTL = 30 * time.Second
-	// dramaImportClaimLockKey 认领短事务内的 PG 事务级咨询锁，用于配额与选任务原子化。
+	// dramaImportClaimLockKey Claim 与延长租约（Renew/Heartbeat）共用的事务级咨询锁，串行化计数/授予/续租提交。
 	dramaImportClaimLockKey int64 = 8520140916
 )
+
+func lockDramaImportLeaseGlobal(tx gdb.TX) error {
+	_, err := tx.Exec("SELECT pg_advisory_xact_lock(?)", dramaImportClaimLockKey)
+	return err
+}
+
+// leaseExtendInTxHook 仅测试注入：已持全局锁并完成行锁期限重验之后、延长 lease_until 提交之前。
+var leaseExtendInTxHook func(ctx context.Context, tx gdb.TX)
+
+func runLeaseExtendInTxHook(ctx context.Context, tx gdb.TX) {
+	if hook := leaseExtendInTxHook; hook != nil {
+		hook(ctx, tx)
+	}
+}
 
 // ErrDramaJobLeaseLost 当前 owner/generation 已不再持有该任务的执行租约。
 var ErrDramaJobLeaseLost = errors.New("drama import job lease lost")
@@ -495,6 +509,7 @@ func assertLockedLeaseFresh(ctx context.Context, tx gdb.TX, lease DramaJobLease)
 }
 
 func lockAndAssertFreshLeaseTx(ctx context.Context, tx gdb.TX, lease DramaJobLease) error {
+	// 只锁任务行。延长租约与 Claim 必须先拿全局咨询锁再调用，禁止在持行锁后再取全局锁（row→global 会死锁）。
 	if err := lockDramaJobRowForLease(ctx, tx, lease); err != nil {
 		return err
 	}
@@ -535,7 +550,7 @@ func claimDramaImportJobDB(db gdb.DB, ctx context.Context, owner string, leaseTT
 	var out *DramaImportJob
 	var lease *DramaJobLease
 	err := db.Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
-		if _, err := tx.Exec("SELECT pg_advisory_xact_lock(?)", dramaImportClaimLockKey); err != nil {
+		if err := lockDramaImportLeaseGlobal(tx); err != nil {
 			return err
 		}
 		// 咨询锁已取得后再用 clock_timestamp 统计与发 TTL；now() 会停在事务开始，锁等待后期限偏早甚至已过期。
@@ -652,9 +667,13 @@ func renewDramaImportJobLeaseDB(db gdb.DB, ctx context.Context, lease DramaJobLe
 		ttl = DefaultDramaJobLeaseTTL
 	}
 	return db.Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
+		if err := lockDramaImportLeaseGlobal(tx); err != nil {
+			return err
+		}
 		if err := lockAndAssertFreshLeaseTx(ctx, tx, lease); err != nil {
 			return err
 		}
+		runLeaseExtendInTxHook(ctx, tx)
 		r, err := leaseOwnerWhere(tx.Model("drama_import_job").Ctx(ctx), lease).Data(g.Map{
 			"lease_until":  leaseUntilSQL(ttl),
 			"heartbeat_at": dbClock(),
@@ -691,9 +710,13 @@ func heartbeatDramaImportJobDB(db gdb.DB, ctx context.Context, lease DramaJobLea
 		data["message"] = message
 	}
 	return db.Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
+		if err := lockDramaImportLeaseGlobal(tx); err != nil {
+			return err
+		}
 		if err := lockAndAssertFreshLeaseTx(ctx, tx, lease); err != nil {
 			return err
 		}
+		runLeaseExtendInTxHook(ctx, tx)
 		r, err := leaseOwnerWhere(tx.Model("drama_import_job").Ctx(ctx), lease).Data(data).Update()
 		return rowsOrLeaseLost(r, err)
 	})
