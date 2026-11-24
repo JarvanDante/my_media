@@ -1,8 +1,10 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -274,7 +276,10 @@ func (c *Admin) ImportDramas(ctx context.Context, req *v1.ImportDramasReq) (res 
 	lim := c.svc.ImportLimits(ctx)
 	if cl := r.Request.ContentLength; cl > 0 && lim.MaxBodyBytes > 0 && cl > lim.MaxBodyBytes {
 		return nil, gerror.NewCode(errcode.CodeBadRequest,
-			"请求体 "+humanAdminBytes(cl)+" 超过上限 "+humanAdminBytes(lim.MaxBodyBytes)+"（含表单余量，压缩包上限 "+humanAdminBytes(lim.MaxZipBytes)+"）")
+			"请求体 "+humanAdminBytes(cl)+" 超过上限 "+humanAdminBytes(lim.MaxBodyBytes)+"，请使用分片上传")
+	}
+	if up.Size > lim.MaxBodyBytes {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, "超过单次请求上限，请使用分片上传")
 	}
 	if up.Size > lim.MaxZipBytes {
 		return nil, gerror.NewCode(errcode.CodeBadRequest, "压缩包超过上限 "+humanAdminBytes(lim.MaxZipBytes))
@@ -291,12 +296,62 @@ func (c *Admin) ImportDramas(ctx context.Context, req *v1.ImportDramasReq) (res 
 	if err != nil {
 		return nil, err
 	}
-	resume := req.Resume || r.Get("resume").Bool()
 	plan := req.Plan
 	if plan == "" {
 		plan = r.Get("plan").String()
 	}
-	return c.svc.ImportDramas(ctx, filepath.Join(dir, saved), up.Filename, plan, resume)
+	target := strings.TrimSpace(req.TargetId)
+	if target == "" {
+		target = strings.TrimSpace(r.Get("target_id").String())
+	}
+	out, err := c.svc.EnqueueDramaZipFile(ctx, filepath.Join(dir, saved), up.Filename, plan, target)
+	if err != nil {
+		return nil, err
+	}
+	return &v1.ImportDramasRes{JobId: out.JobId}, nil
+}
+
+func (c *Admin) CreateDramaUpload(ctx context.Context, req *v1.CreateDramaUploadReq) (res *v1.DramaUploadRes, err error) {
+	return c.svc.CreateDramaUpload(ctx, req.Filename, req.TotalSize)
+}
+
+func (c *Admin) GetDramaUpload(ctx context.Context, req *v1.GetDramaUploadReq) (res *v1.DramaUploadRes, err error) {
+	return c.svc.GetDramaUpload(ctx, req.Id)
+}
+
+func (c *Admin) PutDramaUploadPart(ctx context.Context, req *v1.PutDramaUploadPartReq) (res *v1.PutDramaUploadPartRes, err error) {
+	r := ghttp.RequestFromCtx(ctx)
+	if r == nil || r.Request == nil {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, "缺少分片内容")
+	}
+	var body io.Reader
+	var cl int64
+	if buf := r.GetBody(); len(buf) > 0 {
+		body = bytes.NewReader(buf)
+		cl = int64(len(buf))
+	} else if r.Request.Body != nil {
+		body = r.Request.Body
+		cl = r.Request.ContentLength
+	} else {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, "缺少分片内容")
+	}
+	return c.svc.PutDramaUploadPart(ctx, req.Id, req.N, body, cl)
+}
+
+func (c *Admin) CompleteDramaUpload(ctx context.Context, req *v1.CompleteDramaUploadReq) (res *v1.CompleteDramaUploadRes, err error) {
+	return c.svc.CompleteDramaUpload(ctx, req.Id, req.Plan, req.TargetId)
+}
+
+func (c *Admin) AbortDramaUpload(ctx context.Context, req *v1.AbortDramaUploadReq) (res *v1.AbortDramaUploadRes, err error) {
+	return c.svc.AbortDramaUpload(ctx, req.Id)
+}
+
+func (c *Admin) GetDramaImportJob(ctx context.Context, req *v1.GetDramaImportJobReq) (res *v1.DramaImportJobRes, err error) {
+	return c.svc.GetDramaImportJob(ctx, req.Id)
+}
+
+func (c *Admin) RetryDramaImportJob(ctx context.Context, req *v1.RetryDramaImportJobReq) (res *v1.DramaImportJobRes, err error) {
+	return c.svc.RetryDramaImportJob(ctx, req.Id)
 }
 
 func humanAdminBytes(n int64) string {

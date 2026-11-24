@@ -18,9 +18,9 @@ const (
 )
 
 const (
-	UpdateStatusNone    = 0
-	UpdateStatusSerial  = 1
-	UpdateStatusEnded   = 2
+	UpdateStatusNone   = 0
+	UpdateStatusSerial = 1
+	UpdateStatusEnded  = 2
 )
 
 // MinIO 对象前缀(桶 my-media)。视频 media/、漫画 comics/、动漫 cartoon/、抖音 video/、小说封面 novels/、短剧 drama/ 同级。
@@ -74,3 +74,7 @@ func IsDramaEpisode(kind int, parentID int64) bool {
 
 func DramaCoverKey(code string) string { return PrefixDrama + code + "/cover.bnc" }
 
+// DramaImportPrefix 分片上传与整包的临时前缀，仅允许本任务清理。
+func DramaImportPrefix(code string) string {
+	return PrefixDrama + "import/" + code + "/"
+}

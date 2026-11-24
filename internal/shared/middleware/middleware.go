@@ -21,11 +21,19 @@ func CORS(r *ghttp.Request) {
 func JSONErrors(r *ghttp.Request) {
 	r.Middleware.Next()
 	body := strings.TrimSpace(r.Response.BufferString())
+	if r.Response.Status == http.StatusRequestEntityTooLarge && strings.Contains(body, `"code":`) && strings.Contains(body, "413") {
+		return
+	}
 	dump := body
 	if err := r.GetError(); err != nil {
 		dump += " " + err.Error()
 	}
-	if !strings.Contains(dump, "ParseMultipartForm") && !strings.Contains(dump, "request body too large") {
+	if !strings.Contains(dump, "ParseMultipartForm") && !strings.Contains(dump, "request body too large") && !errorsIsBodyTooLarge(r.GetError()) {
+		return
+	}
+	if errorsIsBodyTooLarge(r.GetError()) || (isDramaImportPath(r) && strings.Contains(strings.ToLower(dump), "body too large")) {
+		maxBody, _ := dramaImportHTTPLimits(r.Context())
+		writeDramaBodyTooLarge(r, maxBody)
 		return
 	}
 	r.Response.ClearBuffer()

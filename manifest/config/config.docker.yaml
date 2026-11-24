@@ -41,19 +41,22 @@ transcode:
   biz: "media"
   cover_seek_sec: 8
 
-# 短剧 zip 导入上限。压缩包(max_zip_bytes)须小于请求体(max_body_bytes)，预留 multipart 表单余量。
-# 默认按公网可达性：Cloudflare 免费/Pro 单请求约 100MB，不能只靠调大 Ingress/clientMaxBodySize 传到 2GB。
-# import_timeout_sec 须不超过 Ingress/代理的 proxy-read/send-timeout（当前 600s），超时即失败。
-# server.clientMaxBodySize 仍为 2GB，是给漫画等其它导入留的进程上限，短剧以本段为准。
+# 短剧 zip：整包分片落到 MinIO 后由异步任务解压入库；单次 HTTP（分片代传、兼容整包 POST）仍受公网约 100MB 限制。
+# 分片默认 32MiB，须显著小于 max_body_bytes，预留协议余量。压缩包/单文件上限与请求体解耦，勿再把单集硬限制在 96MB。
+# import_timeout_sec 是单次 HTTP 时限（须不超过 Ingress/代理 600s）；job_timeout_sec 是后台导入任务时限。
+# server.clientMaxBodySize 仍为 2GB，是进程级上限；不能只靠调大 Ingress 让公网单请求超过 Cloudflare 限额。
 drama_import:
-  max_zip_bytes: 96000000
+  max_zip_bytes: 8589934592
   max_body_bytes: 100000000
-  max_extract_bytes: 192000000
-  max_files: 500
-  max_file_bytes: 96000000
+  max_chunk_bytes: 33554432
+  max_extract_bytes: 17179869184
+  max_files: 2000
+  max_file_bytes: 2147483648
   max_ratio: 100
   min_free_bytes: 1073741824
   import_timeout_sec: 600
+  job_timeout_sec: 7200
+  max_running_jobs: 1
 
 # 播放网关(my_play): 配置后对外播放地址改为网关签名地址; 留空则回退 MinIO 直链
 play_gateway:

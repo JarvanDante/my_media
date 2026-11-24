@@ -23,13 +23,15 @@ import (
 )
 
 type DramaImportPlan struct {
-	Items []DramaImportPlanItem `json:"items"`
+	TargetID string                `json:"target_id"`
+	Items    []DramaImportPlanItem `json:"items"`
 }
 
 type DramaImportPlanItem struct {
-	Title    string                `json:"title"`
-	Cover    string                `json:"cover"`
-	Episodes []DramaImportPlanEp   `json:"episodes"`
+	Title    string              `json:"title"`
+	Cover    string              `json:"cover"`
+	TargetID string              `json:"target_id"`
+	Episodes []DramaImportPlanEp `json:"episodes"`
 }
 
 type DramaImportPlanEp struct {
@@ -38,11 +40,14 @@ type DramaImportPlanEp struct {
 	Title string `json:"title"`
 }
 
-func (s *sAsset) ImportDramas(ctx context.Context, zipPath, zipName, planJSON string, resume bool) (*v1.ImportDramasRes, error) {
+func (s *sAsset) importDramasFromPack(ctx context.Context, zipPath, zipName, planJSON string) (*v1.ImportDramasRes, error) {
 	if s.store == nil {
 		return nil, gerror.NewCode(errcode.CodeBadRequest, "MinIO 未初始化")
 	}
 	lim := dramaImportLimits(ctx)
+	if err := ctxImportCanceled(ctx); err != nil {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
+	}
 	st, err := os.Stat(zipPath)
 	if err != nil {
 		return nil, gerror.NewCode(errcode.CodeBadRequest, "无法读取压缩包")
@@ -85,9 +90,20 @@ func (s *sAsset) ImportDramas(ctx context.Context, zipPath, zipName, planJSON st
 		return nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
 	}
 	if planJSON != "" {
-		groups, err = applyDramaPlan(groups, planJSON)
-		if err != nil {
-			return nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
+		var raw DramaImportPlan
+		if err := json.Unmarshal([]byte(planJSON), &raw); err != nil {
+			return nil, gerror.NewCode(errcode.CodeBadRequest, "导入计划格式无效")
+		}
+		if len(raw.Items) > 0 {
+			groups, err = applyDramaPlan(groups, planJSON)
+			if err != nil {
+				return nil, gerror.NewCode(errcode.CodeBadRequest, err.Error())
+			}
+		} else if tid := strings.TrimSpace(raw.TargetID); tid != "" {
+			if len(groups) != 1 {
+				return nil, gerror.NewCode(errcode.CodeBadRequest, "压缩包含多部短剧时，必须在计划中为各部指定续传目标，不能按标题混剧")
+			}
+			groups[0].TargetID = tid
 		}
 	}
 
@@ -114,12 +130,21 @@ func (s *sAsset) ImportDramas(ctx context.Context, zipPath, zipName, planJSON st
 	defer os.RemoveAll(workDir)
 
 	for _, g := range groups {
-		item, ferr := s.importOneDrama(ctx, g, files, workDir, lim, resume)
+		if err := ctxImportCanceled(ctx); err != nil {
+			res.Failed = append(res.Failed, v1.ImportDramasFail{Title: g.Title, Error: err.Error()})
+			break
+		}
+		item, ferr := s.importOneDrama(ctx, g, files, workDir, lim)
+		if item != nil {
+			res.List = append(res.List, *item)
+		}
 		if ferr != nil {
 			res.Failed = append(res.Failed, v1.ImportDramasFail{Title: g.Title, Error: ferr.Error()})
-			continue
+			if item == nil {
+				continue
+			}
+			// 转码投递失败：原片已入库，仍计为导入成功项
 		}
-		res.List = append(res.List, *item)
 	}
 	res.Imported = len(res.List)
 	res.FailedCount = len(res.Failed)
@@ -153,6 +178,10 @@ func applyDramaPlan(groups []DramaZipGroup, planJSON string) ([]DramaZipGroup, e
 		}
 		g := src
 		g.Title = title
+		g.TargetID = strings.TrimSpace(it.TargetID)
+		if g.TargetID == "" {
+			g.TargetID = strings.TrimSpace(plan.TargetID)
+		}
 		g.CoverPath = strings.ReplaceAll(strings.TrimSpace(it.Cover), "\\", "/")
 		if g.CoverPath != "" && !inGroup(g, g.CoverPath, true) {
 			return nil, fmt.Errorf("短剧「%s」的封面不在该目录内", title)
@@ -232,7 +261,20 @@ func findVideo(g DramaZipGroup, rel string) (dramaFile, bool) {
 	return dramaFile{}, false
 }
 
-func (s *sAsset) importOneDrama(ctx context.Context, g DramaZipGroup, files map[string]*zip.File, workDir string, lim DramaImportLimits, resume bool) (*v1.ImportDramasItem, error) {
+func ctxImportCanceled(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("超时/取消，结果可能部分完成，请刷新核对后再决定重试")
+	}
+	return nil
+}
+
+func (s *sAsset) importOneDrama(ctx context.Context, g DramaZipGroup, files map[string]*zip.File, workDir string, lim DramaImportLimits) (*v1.ImportDramasItem, error) {
+	if err := ctxImportCanceled(ctx); err != nil {
+		return nil, err
+	}
 	if g.NeedsConfirm {
 		msg := "需要确认后才能导入"
 		if len(g.Warnings) > 0 {
@@ -245,19 +287,17 @@ func (s *sAsset) importOneDrama(ctx context.Context, g DramaZipGroup, files map[
 	}
 
 	var series *domain.Asset
-	found, err := s.repo.FindDramasByTitle(ctx, g.Title)
-	if err != nil {
-		return nil, err
-	}
-	if len(found) > 1 {
-		return nil, fmt.Errorf("存在多部同名短剧「%s」，请改名后重试", g.Title)
-	}
 	created := false
-	if len(found) == 1 {
-		if !resume {
-			return nil, fmt.Errorf("已存在同名短剧「%s」。开启续传可追加未入库集数", g.Title)
+	targetID := strings.TrimSpace(g.TargetID)
+	if targetID != "" {
+		got, err := s.repo.GetByCode(ctx, targetID)
+		if err != nil {
+			return nil, err
 		}
-		series = &found[0]
+		if got == nil || !consts.IsDramaSeries(got.Kind, got.ParentId) {
+			return nil, fmt.Errorf("指定的续传短剧不存在或不是短剧整部")
+		}
+		series = got
 	} else {
 		code, err := s.repo.CreateDrama(ctx, g.Title, "", "", "", consts.UpdateStatusSerial)
 		if err != nil {
@@ -272,7 +312,11 @@ func (s *sAsset) importOneDrama(ctx context.Context, g DramaZipGroup, files map[
 
 	skipped := 0
 	imported := 0
+	var enqueueErrs []string
 	for _, v := range g.Videos {
+		if err := ctxImportCanceled(ctx); err != nil {
+			return nil, err
+		}
 		epTitle := strings.TrimSpace(v.Name)
 		if strings.Contains(epTitle, ".") && videoExt[strings.ToLower(path.Ext(epTitle))] {
 			epTitle = "第" + itoa(v.Seq) + "集"
@@ -288,7 +332,11 @@ func (s *sAsset) importOneDrama(ctx context.Context, g DramaZipGroup, files map[
 		if err != nil || ep == nil {
 			return nil, err
 		}
-		if !isNew && ep.SourceKey != "" && (ep.Status == consts.AssetStatusReady || ep.Status == consts.AssetStatusProcessing) {
+		if !isNew && ep.Status == consts.AssetStatusReady {
+			skipped++
+			continue
+		}
+		if !isNew && ep.SourceKey != "" && ep.Status == consts.AssetStatusProcessing {
 			skipped++
 			continue
 		}
@@ -296,12 +344,13 @@ func (s *sAsset) importOneDrama(ctx context.Context, g DramaZipGroup, files map[
 		if !ok {
 			return nil, fmt.Errorf("压缩包缺少文件 %s", v.Path)
 		}
-		if err := s.putDramaSource(ctx, ep, zf, workDir, lim); err != nil {
-			return nil, err
+		if ep.SourceKey == "" || isNew || ep.Status == consts.AssetStatusDraft || ep.Status == consts.AssetStatusFailed {
+			if err := s.putDramaSource(ctx, ep, zf, workDir, lim); err != nil {
+				return nil, err
+			}
 		}
 		if _, err := s.TriggerTranscode(ctx, ep.Code, 8); err != nil {
-			// 原片已入库，转码失败留给详情页重试
-			_ = err
+			enqueueErrs = append(enqueueErrs, fmt.Sprintf("第%d集转码投递失败: %s", v.Seq, err.Error()))
 		}
 		imported++
 	}
@@ -323,6 +372,10 @@ func (s *sAsset) importOneDrama(ctx context.Context, g DramaZipGroup, files map[
 	item := &v1.ImportDramasItem{
 		Id: series.Code, Title: g.Title, ChapterCount: count,
 		Appended: !created, SkippedCount: skipped, ImportedCount: imported,
+	}
+	if len(enqueueErrs) > 0 {
+		// 原片已入库，任务记为部分成功，由重试补投 Kafka，不得吞掉投递失败。
+		return item, fmt.Errorf("%s", strings.Join(enqueueErrs, "；"))
 	}
 	return item, nil
 }

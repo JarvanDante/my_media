@@ -44,13 +44,15 @@ var Main = gcmd.Command{
 				g.Log().Errorf(bg, "kafka result consumer stopped: %v", err)
 			}
 		}()
+		// 短剧 zip 异步导入（DB 轮询，逐集仍走原 Kafka 转码）
+		go svc.RunDramaImportWorker(context.Background())
 
 		s := g.Server()
 		// 漫画 zip 常超过 GF 默认 8MB / 配置里的 256MB；Nacos 热更新改不了已启动的 server 限制。
 		s.SetClientMaxBodySize(2 << 30)
 		s.SetReadTimeout(30 * time.Minute)
 		s.SetWriteTimeout(30 * time.Minute)
-		s.Use(middleware.CORS, middleware.JSONErrors, ghttp.MiddlewareHandlerResponse)
+		s.Use(middleware.CORS, middleware.LimitDramaImportBody, middleware.JSONErrors, ghttp.MiddlewareHandlerResponse)
 		s.BindStatusHandler(404, middleware.NotFound)
 
 		health.Register(s.Group("/"))

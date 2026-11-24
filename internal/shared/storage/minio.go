@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"strings"
 	"time"
@@ -258,4 +259,127 @@ func RewritePublicHost(raw, hostBase string) (string, error) {
 	u.Scheme = b.Scheme
 	u.Host = b.Host
 	return u.String(), nil
+}
+
+const maxComposeSources = 32
+
+// ObjectSize 返回对象字节数；不存在则返回错误。
+func (m *Minio) ObjectSize(ctx context.Context, bucket, key string) (int64, error) {
+	if bucket == "" {
+		bucket = m.bucket
+	}
+	key = strings.TrimLeft(key, "/")
+	info, err := m.client.StatObject(ctx, bucket, key, miniogo.StatObjectOptions{})
+	if err != nil {
+		return 0, err
+	}
+	return info.Size, nil
+}
+
+// GetObject 打开对象流，调用方负责 Close。
+func (m *Minio) GetObject(ctx context.Context, bucket, key string) (io.ReadCloser, int64, error) {
+	if bucket == "" {
+		bucket = m.bucket
+	}
+	key = strings.TrimLeft(key, "/")
+	obj, err := m.client.GetObject(ctx, bucket, key, miniogo.GetObjectOptions{})
+	if err != nil {
+		return nil, 0, err
+	}
+	info, err := obj.Stat()
+	if err != nil {
+		_ = obj.Close()
+		return nil, 0, err
+	}
+	return obj, info.Size, nil
+}
+
+// ComposeObjects 将同源桶内多个对象按序合并到 dstKey。超过单次源数量时分层合并，并清理中间对象。
+func (m *Minio) ComposeObjects(ctx context.Context, bucket, dstKey string, srcKeys []string) error {
+	if bucket == "" {
+		bucket = m.bucket
+	}
+	dstKey = strings.TrimLeft(dstKey, "/")
+	if dstKey == "" {
+		return fmt.Errorf("empty destination key")
+	}
+	if len(srcKeys) == 0 {
+		return fmt.Errorf("no source objects to compose")
+	}
+	clean := make([]string, 0, len(srcKeys))
+	for _, k := range srcKeys {
+		k = strings.TrimLeft(k, "/")
+		if k == "" {
+			return fmt.Errorf("empty source key")
+		}
+		clean = append(clean, k)
+	}
+	temps := []string{}
+	defer func() {
+		for _, k := range temps {
+			if err := m.RemoveObject(ctx, bucket, k); err != nil {
+				g.Log().Warningf(ctx, "minio compose cleanup %s: %v", k, err)
+			}
+		}
+	}()
+	level := clean
+	n := 0
+	for len(level) > maxComposeSources {
+		var next []string
+		for i := 0; i < len(level); i += maxComposeSources {
+			j := i + maxComposeSources
+			if j > len(level) {
+				j = len(level)
+			}
+			batch := level[i:j]
+			tmp := fmt.Sprintf("%s.compose-%d", dstKey, n)
+			n++
+			if err := m.composeOnce(ctx, bucket, tmp, batch); err != nil {
+				return err
+			}
+			temps = append(temps, tmp)
+			next = append(next, tmp)
+		}
+		level = next
+	}
+	return m.composeOnce(ctx, bucket, dstKey, level)
+}
+
+func (m *Minio) composeOnce(ctx context.Context, bucket, dstKey string, srcKeys []string) error {
+	if len(srcKeys) == 1 && srcKeys[0] == dstKey {
+		return nil
+	}
+	if len(srcKeys) == 1 {
+		src := miniogo.CopySrcOptions{Bucket: bucket, Object: srcKeys[0]}
+		dst := miniogo.CopyDestOptions{Bucket: bucket, Object: dstKey}
+		_, err := m.client.CopyObject(ctx, dst, src)
+		return err
+	}
+	srcs := make([]miniogo.CopySrcOptions, len(srcKeys))
+	for i, k := range srcKeys {
+		srcs[i] = miniogo.CopySrcOptions{Bucket: bucket, Object: k}
+	}
+	dst := miniogo.CopyDestOptions{Bucket: bucket, Object: dstKey}
+	_, err := m.client.ComposeObject(ctx, dst, srcs...)
+	return err
+}
+
+// PresignHostUnreachable 判断预签名 URL 对远端浏览器是否不可达（回环、内网、docker 主机名）。
+func PresignHostUnreachable(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" {
+		return true
+	}
+	h := strings.ToLower(u.Hostname())
+	if h == "localhost" || h == "127.0.0.1" || h == "::1" || h == "0.0.0.0" || h == "host.docker.internal" {
+		return true
+	}
+	if ip := net.ParseIP(h); ip != nil {
+		return ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsLinkLocalUnicast()
+	}
+	// 无点号的服务名（如 minio、my-minio）对公网浏览器不可达
+	if !strings.Contains(h, ".") {
+		return true
+	}
+	return false
 }

@@ -36,6 +36,14 @@ type Asset interface {
 	CreateEpisode(ctx context.Context, parentCode string, seq int, title string) (code string, created bool, err error)
 	UpdateEpisode(ctx context.Context, code, title string, seq int) error
 	ListEpisodes(ctx context.Context, parentCode string) ([]domain.Asset, error)
-	ImportDramas(ctx context.Context, zipPath, zipName, planJSON string, resume bool) (*v1.ImportDramasRes, error)
 	ImportLimits(ctx context.Context) v1.DramaImportLimitsRes
+	CreateDramaUpload(ctx context.Context, filename string, totalSize int64) (*v1.DramaUploadRes, error)
+	GetDramaUpload(ctx context.Context, id string) (*v1.DramaUploadRes, error)
+	PutDramaUploadPart(ctx context.Context, id string, n int, body io.Reader, contentLength int64) (*v1.PutDramaUploadPartRes, error)
+	CompleteDramaUpload(ctx context.Context, id, planJSON, targetID string) (*v1.CompleteDramaUploadRes, error)
+	AbortDramaUpload(ctx context.Context, id string) (*v1.AbortDramaUploadRes, error)
+	EnqueueDramaZipFile(ctx context.Context, zipPath, zipName, planJSON, targetID string) (*v1.CompleteDramaUploadRes, error)
+	GetDramaImportJob(ctx context.Context, id string) (*v1.DramaImportJobRes, error)
+	RetryDramaImportJob(ctx context.Context, id string) (*v1.DramaImportJobRes, error)
+	RunDramaImportWorker(ctx context.Context)
 }

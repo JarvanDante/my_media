@@ -14,92 +14,114 @@ import (
 	"unicode"
 )
 
-// 默认上限按公网可达性收敛：Cloudflare 免费/Pro 单请求约 100MB（官方文档），
-// 集群 Ingress/代理当前是 512MiB / 600s，只调大 Ingress 不能突破 Cloudflare。
-// max_zip 小于 max_body，给 multipart 表单留余量。超时与 Ingress 600s 对齐，超时即失败。
+// HTTP 入口（分片代传、兼容整包 POST）仍受公网 Cloudflare 约 100MB 单请求限制。
+// 整包经分片落到 MinIO 后由异步任务处理，压缩包/单文件上限与请求体解耦，恢复大文件能力。
 const (
 	defaultMaxBodyBytes     int64   = 100_000_000
 	defaultMultipartMargin  int64   = 4_000_000
-	defaultMaxZipBytes      int64   = 96_000_000
-	defaultMaxExtractBytes  int64   = 192_000_000
-	defaultMaxFiles         int     = 500
-	defaultMaxFileBytes     int64   = 96_000_000
+	defaultMaxChunkBytes    int64   = 32 << 20
+	defaultMaxZipBytes      int64   = 8 << 30
+	defaultMaxExtractBytes  int64   = 16 << 30
+	defaultMaxFiles         int     = 2000
+	defaultMaxFileBytes     int64   = 2 << 30
 	defaultMaxRatio         float64 = 100
 	defaultMinFreeBytes     int64   = 1 << 30
 	defaultImportTimeoutSec int     = 600
+	defaultJobTimeoutSec    int     = 7200
+	defaultMaxRunningJobs   int     = 1
 )
 
 type DramaImportLimits struct {
 	MaxZipBytes      int64
 	MaxBodyBytes     int64
+	MaxChunkBytes    int64
 	MaxExtractBytes  int64
 	MaxFiles         int
 	MaxFileBytes     int64
 	MaxRatio         float64
 	MinFreeBytes     int64
 	ImportTimeoutSec int
+	JobTimeoutSec    int
+	MaxRunningJobs   int
 }
 
 func DefaultDramaImportLimits() DramaImportLimits {
 	return DramaImportLimits{
 		MaxZipBytes:      defaultMaxZipBytes,
 		MaxBodyBytes:     defaultMaxBodyBytes,
+		MaxChunkBytes:    defaultMaxChunkBytes,
 		MaxExtractBytes:  defaultMaxExtractBytes,
 		MaxFiles:         defaultMaxFiles,
 		MaxFileBytes:     defaultMaxFileBytes,
 		MaxRatio:         defaultMaxRatio,
 		MinFreeBytes:     defaultMinFreeBytes,
 		ImportTimeoutSec: defaultImportTimeoutSec,
+		JobTimeoutSec:    defaultJobTimeoutSec,
+		MaxRunningJobs:   defaultMaxRunningJobs,
 	}.withDefaults()
 }
 
 func (l DramaImportLimits) withDefaults() DramaImportLimits {
-	d := DramaImportLimits{
-		MaxZipBytes:      defaultMaxZipBytes,
-		MaxBodyBytes:     defaultMaxBodyBytes,
-		MaxExtractBytes:  defaultMaxExtractBytes,
-		MaxFiles:         defaultMaxFiles,
-		MaxFileBytes:     defaultMaxFileBytes,
-		MaxRatio:         defaultMaxRatio,
-		MinFreeBytes:     defaultMinFreeBytes,
-		ImportTimeoutSec: defaultImportTimeoutSec,
-	}
 	if l.MaxBodyBytes <= 0 {
-		l.MaxBodyBytes = d.MaxBodyBytes
+		l.MaxBodyBytes = defaultMaxBodyBytes
+	}
+	if l.MaxChunkBytes <= 0 {
+		l.MaxChunkBytes = defaultMaxChunkBytes
+	}
+	if l.MaxChunkBytes >= l.MaxBodyBytes {
+		// 分片须显著小于公网单请求上限，预留协议余量
+		capChunk := l.MaxBodyBytes - defaultMultipartMargin
+		if capChunk > 32<<20 {
+			capChunk = 32 << 20
+		}
+		if capChunk < 1 {
+			capChunk = l.MaxBodyBytes
+		}
+		l.MaxChunkBytes = capChunk
 	}
 	if l.MaxZipBytes <= 0 {
-		l.MaxZipBytes = d.MaxZipBytes
+		l.MaxZipBytes = defaultMaxZipBytes
 	}
 	if l.MaxExtractBytes <= 0 {
-		l.MaxExtractBytes = d.MaxExtractBytes
+		l.MaxExtractBytes = defaultMaxExtractBytes
 	}
 	if l.MaxFiles <= 0 {
-		l.MaxFiles = d.MaxFiles
+		l.MaxFiles = defaultMaxFiles
 	}
 	if l.MaxFileBytes <= 0 {
-		l.MaxFileBytes = d.MaxFileBytes
+		l.MaxFileBytes = defaultMaxFileBytes
 	}
 	if l.MaxRatio <= 0 {
-		l.MaxRatio = d.MaxRatio
+		l.MaxRatio = defaultMaxRatio
 	}
 	if l.MinFreeBytes <= 0 {
-		l.MinFreeBytes = d.MinFreeBytes
+		l.MinFreeBytes = defaultMinFreeBytes
 	}
 	if l.ImportTimeoutSec <= 0 {
-		l.ImportTimeoutSec = d.ImportTimeoutSec
+		l.ImportTimeoutSec = defaultImportTimeoutSec
 	}
-	// 压缩包必须小于请求体，预留 multipart 余量。
-	capZip := l.MaxBodyBytes
-	if l.MaxBodyBytes > defaultMultipartMargin {
-		capZip = l.MaxBodyBytes - defaultMultipartMargin
+	if l.JobTimeoutSec <= 0 {
+		l.JobTimeoutSec = defaultJobTimeoutSec
 	}
-	if l.MaxZipBytes > capZip {
-		l.MaxZipBytes = capZip
+	if l.MaxRunningJobs <= 0 {
+		l.MaxRunningJobs = defaultMaxRunningJobs
 	}
-	if l.MaxFileBytes > l.MaxZipBytes {
-		l.MaxFileBytes = l.MaxZipBytes
+	if l.MaxChunkBytes > l.MaxZipBytes {
+		l.MaxChunkBytes = l.MaxZipBytes
 	}
 	return l
+}
+
+func MaxDramaImportParts(lim DramaImportLimits) int {
+	lim = lim.withDefaults()
+	if lim.MaxChunkBytes <= 0 {
+		return 1
+	}
+	n := int((lim.MaxZipBytes + lim.MaxChunkBytes - 1) / lim.MaxChunkBytes)
+	if n < 1 {
+		return 1
+	}
+	return n
 }
 
 var (
@@ -130,6 +152,7 @@ type dramaFile struct {
 
 type DramaZipGroup struct {
 	Title        string
+	TargetID     string
 	Videos       []dramaFile
 	Covers       []dramaFile
 	CoverPath    string

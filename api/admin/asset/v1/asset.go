@@ -262,18 +262,23 @@ type DramaImportLimitsReq struct {
 type DramaImportLimitsRes struct {
 	MaxZipBytes      int64   `json:"max_zip_bytes"`
 	MaxBodyBytes     int64   `json:"max_body_bytes"`
+	MaxChunkBytes    int64   `json:"max_chunk_bytes"`
+	MaxParts         int     `json:"max_parts"`
 	MaxExtractBytes  int64   `json:"max_extract_bytes"`
 	MaxFiles         int     `json:"max_files"`
 	MaxFileBytes     int64   `json:"max_file_bytes"`
 	MaxRatio         float64 `json:"max_ratio"`
 	MinFreeBytes     int64   `json:"min_free_bytes"`
 	ImportTimeoutSec int     `json:"import_timeout_sec"`
+	JobTimeoutSec    int     `json:"job_timeout_sec"`
+	MaxRunningJobs   int     `json:"max_running_jobs"`
 }
 
 type ImportDramasReq struct {
-	g.Meta `path:"/admin/dramas/import" method:"post" mime:"multipart/form-data" tags:"Admin/Asset" summary:"短剧 zip 批量入库"`
-	Resume bool   `json:"resume" p:"resume" dc:"续传：同名短剧追加未入库集数"`
-	Plan   string `json:"plan" p:"plan" dc:"可选，JSON 导入计划"`
+	g.Meta   `path:"/admin/dramas/import" method:"post" mime:"multipart/form-data" tags:"Admin/Asset" summary:"短剧 zip 兼容整包入库（小包，异步任务）"`
+	Resume   bool   `json:"resume" p:"resume" dc:"已废弃：不得按标题混剧"`
+	Plan     string `json:"plan" p:"plan" dc:"可选，JSON 导入计划"`
+	TargetId string `json:"target_id" p:"target_id" dc:"显式指定续传目标短剧 id；空则创建新剧"`
 }
 
 type ImportDramasItem struct {
@@ -291,8 +296,121 @@ type ImportDramasFail struct {
 }
 
 type ImportDramasRes struct {
+	JobId       string             `json:"job_id,omitempty"`
 	Imported    int                `json:"imported"`
 	FailedCount int                `json:"failed_count"`
 	List        []ImportDramasItem `json:"list"`
 	Failed      []ImportDramasFail `json:"failed"`
+}
+
+type DramaUploadPart struct {
+	N      int    `json:"n"`
+	Offset int64  `json:"offset"`
+	Size   int64  `json:"size"`
+	Done   bool   `json:"done"`
+	Mode   string `json:"mode"` // presign | proxy
+	Url    string `json:"url,omitempty"`
+}
+
+type CreateDramaUploadReq struct {
+	g.Meta    `path:"/admin/dramas/uploads" method:"post" tags:"Admin/Asset" summary:"创建短剧 zip 分片上传会话"`
+	Filename  string `json:"filename" v:"required"`
+	TotalSize int64  `json:"total_size" v:"required|min:1"`
+}
+
+type DramaUploadRes struct {
+	Id        string            `json:"id"`
+	Filename  string            `json:"filename"`
+	TotalSize int64             `json:"total_size"`
+	ChunkSize int64             `json:"chunk_size"`
+	PartCount int               `json:"part_count"`
+	Status    string            `json:"status"`
+	ExpiresAt string            `json:"expires_at"`
+	JobId     string            `json:"job_id,omitempty"`
+	Parts     []DramaUploadPart `json:"parts"`
+}
+
+type GetDramaUploadReq struct {
+	g.Meta `path:"/admin/dramas/uploads/{id}" method:"get" tags:"Admin/Asset" summary:"查询短剧 zip 分片上传会话"`
+	Id     string `json:"id" in:"path" v:"required|length:8,16"`
+}
+
+type PutDramaUploadPartReq struct {
+	g.Meta `path:"/admin/dramas/uploads/{id}/parts/{n}" method:"put" mime:"application/octet-stream" tags:"Admin/Asset" summary:"代传短剧 zip 分片"`
+	Id     string `json:"id" in:"path" v:"required|length:8,16"`
+	N      int    `json:"n" in:"path" v:"required|min:1"`
+}
+
+type PutDramaUploadPartRes struct {
+	N    int   `json:"n"`
+	Size int64 `json:"size"`
+	Done bool  `json:"done"`
+}
+
+type CompleteDramaUploadReq struct {
+	g.Meta   `path:"/admin/dramas/uploads/{id}/complete" method:"post" tags:"Admin/Asset" summary:"完成分片并创建异步导入任务"`
+	Id       string `json:"id" in:"path" v:"required|length:8,16"`
+	Plan     string `json:"plan" dc:"可选，JSON 导入计划"`
+	TargetId string `json:"target_id" dc:"显式指定续传目标短剧 id；空则创建新剧"`
+}
+
+type CompleteDramaUploadRes struct {
+	UploadId string `json:"upload_id"`
+	JobId    string `json:"job_id"`
+	Status   string `json:"status"`
+}
+
+type AbortDramaUploadReq struct {
+	g.Meta `path:"/admin/dramas/uploads/{id}/abort" method:"post" tags:"Admin/Asset" summary:"取消分片会话并清理临时对象"`
+	Id     string `json:"id" in:"path" v:"required|length:8,16"`
+}
+
+type AbortDramaUploadRes struct {
+	Id      string `json:"id"`
+	Deleted int    `json:"deleted"`
+}
+
+type DramaImportJobDrama struct {
+	Id              string `json:"id"`
+	Title           string `json:"title"`
+	ChapterCount    int    `json:"chapter_count"`
+	Appended        bool   `json:"appended"`
+	SkippedCount    int    `json:"skipped_count"`
+	ImportedCount   int    `json:"imported_count"`
+	ReadyCount      int    `json:"ready_count"`
+	ProcessingCount int    `json:"processing_count"`
+	FailedCount     int    `json:"failed_count"`
+}
+
+type GetDramaImportJobReq struct {
+	g.Meta `path:"/admin/dramas/import-jobs/{id}" method:"get" tags:"Admin/Asset" summary:"查询短剧异步导入任务"`
+	Id     string `json:"id" in:"path" v:"required|length:8,16"`
+}
+
+type DramaImportJobRes struct {
+	Id                string                `json:"id"`
+	UploadId          string                `json:"upload_id"`
+	Status            string                `json:"status"`
+	Stage             string                `json:"stage"`
+	Progress          int                   `json:"progress"`
+	Message           string                `json:"message"`
+	Error             string                `json:"error"`
+	Attempts          int                   `json:"attempts"`
+	MaxAttempts       int                   `json:"max_attempts"`
+	Imported          int                   `json:"imported"`
+	FailedCount       int                   `json:"failed_count"`
+	List              []DramaImportJobDrama `json:"list"`
+	Failed            []ImportDramasFail    `json:"failed"`
+	EpisodeTotal      int                   `json:"episode_total"`
+	EpisodeReady      int                   `json:"episode_ready"`
+	EpisodeProcessing int                   `json:"episode_processing"`
+	EpisodeFailed     int                   `json:"episode_failed"`
+	CreatedAt         string                `json:"created_at"`
+	UpdatedAt         string                `json:"updated_at"`
+	FinishedAt        string                `json:"finished_at,omitempty"`
+}
+
+type RetryDramaImportJobReq struct {
+	g.Meta `path:"/admin/dramas/import-jobs/{id}/retry" method:"post" tags:"Admin/Asset" summary:"重试失败的导入或转码投递"`
+	Id     string `json:"id" in:"path" v:"required|length:8,16"`
 }

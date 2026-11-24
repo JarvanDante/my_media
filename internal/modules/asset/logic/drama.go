@@ -36,8 +36,17 @@ func dramaImportLimits(ctx context.Context) DramaImportLimits {
 	if n := g.Cfg().MustGet(ctx, "drama_import.max_body_bytes", 0).Int64(); n > 0 {
 		lim.MaxBodyBytes = n
 	}
+	if n := g.Cfg().MustGet(ctx, "drama_import.max_chunk_bytes", 0).Int64(); n > 0 {
+		lim.MaxChunkBytes = n
+	}
 	if n := g.Cfg().MustGet(ctx, "drama_import.import_timeout_sec", 0).Int(); n > 0 {
 		lim.ImportTimeoutSec = n
+	}
+	if n := g.Cfg().MustGet(ctx, "drama_import.job_timeout_sec", 0).Int(); n > 0 {
+		lim.JobTimeoutSec = n
+	}
+	if n := g.Cfg().MustGet(ctx, "drama_import.max_running_jobs", 0).Int(); n > 0 {
+		lim.MaxRunningJobs = n
 	}
 	return lim.withDefaults()
 }
@@ -46,10 +55,13 @@ func (s *sAsset) ImportLimits(ctx context.Context) v1.DramaImportLimitsRes {
 	lim := dramaImportLimits(ctx)
 	return v1.DramaImportLimitsRes{
 		MaxZipBytes: lim.MaxZipBytes, MaxBodyBytes: lim.MaxBodyBytes,
+		MaxChunkBytes: lim.MaxChunkBytes, MaxParts: MaxDramaImportParts(lim),
 		MaxExtractBytes: lim.MaxExtractBytes,
 		MaxFiles:        lim.MaxFiles, MaxFileBytes: lim.MaxFileBytes,
 		MaxRatio: lim.MaxRatio, MinFreeBytes: lim.MinFreeBytes,
 		ImportTimeoutSec: lim.ImportTimeoutSec,
+		JobTimeoutSec:    lim.JobTimeoutSec,
+		MaxRunningJobs:   lim.MaxRunningJobs,
 	}
 }
 
