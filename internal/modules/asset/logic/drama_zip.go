@@ -166,7 +166,7 @@ type DramaZipGroup struct {
 
 func shouldIgnoreZipName(name string) bool {
 	name = strings.ReplaceAll(name, "\\", "/")
-	name = strings.TrimSpace(name)
+	// 只统一分隔符，不 TrimSpace：前导/尾部空白是路径身份的一部分。
 	if name == "" || strings.HasSuffix(name, "/") {
 		return true
 	}
@@ -191,29 +191,36 @@ func shouldIgnoreZipName(name string) bool {
 	return false
 }
 
+// dramaMediaExt 只为识别视频/封面类型去掉扩展名两侧空白；完整路径身份仍保留文件名空白。
+func dramaMediaExt(name string) string {
+	return strings.ToLower(strings.TrimSpace(path.Ext(name)))
+}
+
 func sanitizeZipEntryName(name string) (string, error) {
-	raw := strings.TrimSpace(name)
-	if raw == "" {
-		return "", fmt.Errorf("空路径")
-	}
-	if strings.Contains(raw, "\x00") {
+	if strings.Contains(name, "\x00") {
 		return "", fmt.Errorf("非法路径")
 	}
-	n := strings.ReplaceAll(raw, "\\", "/")
-	if strings.HasPrefix(n, "/") || strings.HasPrefix(n, "/") {
-		return "", fmt.Errorf("拒绝绝对路径: %s", raw)
+	// 与绑定 item key 同一无损规范：只统一分隔符，不 TrimSpace。
+	n := strings.ReplaceAll(name, "\\", "/")
+	if n == "" {
+		return "", fmt.Errorf("空路径")
 	}
-	if filepath.IsAbs(raw) || strings.HasPrefix(n, "/") || (len(n) > 1 && n[1] == ':') {
-		return "", fmt.Errorf("拒绝绝对路径: %s", raw)
+	if strings.HasPrefix(n, "/") || filepath.IsAbs(n) || (len(n) > 1 && n[1] == ':') {
+		return "", fmt.Errorf("拒绝绝对路径: %s", name)
 	}
 	clean := path.Clean(n)
-	if clean == ".." || strings.HasPrefix(clean, "../") {
-		return "", fmt.Errorf("拒绝越出目录的路径: %s", raw)
+	if clean == ".." || strings.HasPrefix(clean, "../") || path.IsAbs(clean) {
+		return "", fmt.Errorf("拒绝越出目录的路径: %s", name)
 	}
-	if path.IsAbs(clean) {
-		return "", fmt.Errorf("拒绝绝对路径: %s", raw)
+	clean = strings.TrimPrefix(clean, "./")
+	if clean == "" || clean == "/" {
+		return "", fmt.Errorf("空路径")
 	}
-	return strings.TrimPrefix(clean, "./"), nil
+	// 点路径或多余分隔符折叠会改变身份，合桶前明确拒绝，避免两组被静默合并。
+	if clean != n {
+		return "", fmt.Errorf("路径 %q 含有会混淆的点路径或多余分隔符，拒绝规范化合并", name)
+	}
+	return n, nil
 }
 
 func ParseEpisodeSeq(filename string) (int, bool) {
@@ -345,7 +352,7 @@ func GroupDramaZip(files []zipMeta, zipBase string) ([]DramaZipGroup, error) {
 			unsafe = err
 			break
 		}
-		ext := strings.ToLower(path.Ext(clean))
+		ext := dramaMediaExt(clean)
 		if !videoExt[ext] && !imageExtDrama[ext] {
 			dir := path.Dir(clean)
 			skippedOther[dir] = append(skippedOther[dir], path.Base(clean))
@@ -464,12 +471,20 @@ func groupTitle(key, zipBase string) string {
 		if t == "" {
 			return "未命名短剧"
 		}
-		return t
+		return displayDramaTitle(t)
 	}
 	if i := strings.Index(key, "/"); i >= 0 {
-		return key[i+1:]
+		return displayDramaTitle(key[i+1:])
 	}
-	return key
+	return displayDramaTitle(key)
+}
+
+// displayDramaTitle 仅用于展示标题，可去掉首尾空白；路径与 ItemKey 不得使用。
+func displayDramaTitle(s string) string {
+	if t := strings.TrimSpace(s); t != "" {
+		return t
+	}
+	return s
 }
 
 func finalizeDramaGroup(g *DramaZipGroup) {

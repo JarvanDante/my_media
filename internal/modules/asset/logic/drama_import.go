@@ -201,9 +201,17 @@ func applyDramaPlan(groups []DramaZipGroup, planJSON string) ([]DramaZipGroup, e
 		if g.TargetID == "" {
 			g.TargetID = strings.TrimSpace(plan.TargetID)
 		}
-		g.CoverPath = strings.ReplaceAll(strings.TrimSpace(it.Cover), "\\", "/")
-		if g.CoverPath != "" && !inGroup(g, g.CoverPath, true) {
-			return nil, fmt.Errorf("短剧「%s」的封面不在该目录内", title)
+		if it.Cover != "" {
+			cover, err := sanitizeZipEntryName(it.Cover)
+			if err != nil {
+				return nil, fmt.Errorf("短剧「%s」的封面路径无效: %w", title, err)
+			}
+			g.CoverPath = cover
+			if !inGroup(g, g.CoverPath, true) {
+				return nil, fmt.Errorf("短剧「%s」的封面不在该目录内", title)
+			}
+		} else {
+			g.CoverPath = ""
 		}
 		var videos []dramaFile
 		seen := map[int]int{}
@@ -215,7 +223,13 @@ func applyDramaPlan(groups []DramaZipGroup, planJSON string) ([]DramaZipGroup, e
 			if seen[ep.Seq] > 1 {
 				return nil, fmt.Errorf("短剧「%s」集号 %d 重复", title, ep.Seq)
 			}
-			p := strings.ReplaceAll(strings.TrimSpace(ep.Path), "\\", "/")
+			if ep.Path == "" {
+				return nil, fmt.Errorf("短剧「%s」剧集路径为空", title)
+			}
+			p, err := sanitizeZipEntryName(ep.Path)
+			if err != nil {
+				return nil, fmt.Errorf("短剧「%s」剧集路径无效: %w", title, err)
+			}
 			f, ok := findVideo(g, p)
 			if !ok {
 				return nil, fmt.Errorf("短剧「%s」找不到剧集文件", title)
@@ -238,11 +252,13 @@ func applyDramaPlan(groups []DramaZipGroup, planJSON string) ([]DramaZipGroup, e
 }
 
 func findPlanGroup(groups []DramaZipGroup, it DramaImportPlanItem) (DramaZipGroup, bool) {
-	if len(it.Episodes) > 0 {
-		p := strings.ReplaceAll(strings.TrimSpace(it.Episodes[0].Path), "\\", "/")
-		for _, g := range groups {
-			if inGroup(g, p, false) {
-				return g, true
+	if len(it.Episodes) > 0 && it.Episodes[0].Path != "" {
+		p, err := sanitizeZipEntryName(it.Episodes[0].Path)
+		if err == nil {
+			for _, g := range groups {
+				if inGroup(g, p, false) {
+					return g, true
+				}
 			}
 		}
 	}

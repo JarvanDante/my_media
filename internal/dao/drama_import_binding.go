@@ -189,3 +189,8 @@ func resolveDramaImportSeriesDB(db gdb.DB, ctx context.Context, jobPK int64, ite
 	}
 	return got, true, nil
 }
+
+// ResolveDramaImportSeriesOnDB 供隔离测试走真实解析且不触达默认 g.DB()。
+func ResolveDramaImportSeriesOnDB(db gdb.DB, ctx context.Context, jobPK int64, itemKey, title, explicitTarget string) (*domain.Asset, bool, error) {
+	return resolveDramaImportSeriesDB(db, ctx, jobPK, itemKey, title, explicitTarget)
+}

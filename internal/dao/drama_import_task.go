@@ -1028,3 +1028,12 @@ func toTime(v interface{}) *time.Time {
 	tt := gt.Time
 	return &tt
 }
+
+// ClaimDramaImportJobOnDB / WithDramaJobLeaseOnDB 供隔离测试使用指定数据库，避免默认业务连接。
+func ClaimDramaImportJobOnDB(db gdb.DB, ctx context.Context, owner string, leaseTTL time.Duration, maxRunning int) (*DramaImportJob, *DramaJobLease, error) {
+	return claimDramaImportJobDB(db, ctx, owner, leaseTTL, maxRunning)
+}
+
+func WithDramaJobLeaseOnDB(db gdb.DB, ctx context.Context, lease DramaJobLease, fn func(ctx context.Context) error) error {
+	return withDramaJobLeaseDB(db, ctx, lease, fn)
+}
