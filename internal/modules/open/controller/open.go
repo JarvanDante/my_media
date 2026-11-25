@@ -263,7 +263,7 @@ func toOpenEpisodes(eps []domain.Asset, siteCode string) []v1.EpisodeItem {
 	for _, e := range eps {
 		out = append(out, v1.EpisodeItem{
 			Id: e.Code, Seq: e.Seq, Title: e.Title, DurationSec: e.DurationSec,
-			CoverUrl: playsign.WrapCover(e.Code, e.CoverUrl, siteCode),
+			CoverUrl: playsign.WrapCover(e.Code, e.CoverUrl, siteCode), Playlist: playsign.PlaylistName(e.PlayUrl),
 		})
 	}
 	return out

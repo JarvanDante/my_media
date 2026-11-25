@@ -38,6 +38,7 @@ type EpisodeItem struct {
 	Title       string `json:"title"`
 	DurationSec int    `json:"duration_sec"`
 	CoverUrl    string `json:"cover_url"`
+	Playlist    string `json:"playlist,omitempty"` // 清单文件名(不含签名)，供站点本地签发播放地址
 }
 
 type ListReq struct {

@@ -69,6 +69,9 @@ func playlistName(raw string) string {
 	return "master.m3u8"
 }
 
+// PlaylistName 导出清单文件名推断，供开放接口返回各集清单名。
+func PlaylistName(raw string) string { return playlistName(raw) }
+
 func buildURL(code, site, file string, exp int64, d int, ip string, iat int64) string {
 	p := purpose(file)
 	u := fmt.Sprintf("%s/hls/%s/%s?e=%d&s=%s&t=%d&p=%s&sig=%s",
