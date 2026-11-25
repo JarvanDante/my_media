@@ -1,6 +1,6 @@
 // Package playsign 生成指向 my_play 播放网关的签名播放地址。
 // 未配置 play_gateway.base_url 时返回原始 play_url(平滑降级)。
-// 签名 v2: HMAC-SHA256(secret, code|site|exp|d|ip), d=试看秒数(0=完整), ip=绑定IP(空=不绑)。
+// 签名 v4: HMAC-SHA256(secret, code|site|exp|d|ip|iat|p), d=试看秒数(0=完整), ip=绑定IP(空=不绑), p=用途(img/hls)。
 package playsign
 
 import (
@@ -38,10 +38,18 @@ func load() {
 	}
 }
 
-func sign(code, site string, exp int64, d int, ip string, iat int64) string {
+func sign(code, site string, exp int64, d int, ip string, iat int64, p string) string {
 	mac := hmac.New(sha256.New, []byte(c.secret))
-	_, _ = fmt.Fprintf(mac, "%s|%s|%d|%d|%s|%d", code, site, exp, d, ip, iat)
+	_, _ = fmt.Fprintf(mac, "%s|%s|%d|%d|%s|%d|%s", code, site, exp, d, ip, iat, p)
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// purpose 清单签 hls，其余(封面/页图)签 img，my_play 按请求文件类型校验。
+func purpose(file string) string {
+	if strings.HasSuffix(strings.ToLower(file), ".m3u8") {
+		return "hls"
+	}
+	return "img"
 }
 
 // playlistName 从已存播放地址推断清单文件名(master.m3u8 多码率 / index.m3u8 旧单档),
@@ -62,8 +70,9 @@ func playlistName(raw string) string {
 }
 
 func buildURL(code, site, file string, exp int64, d int, ip string, iat int64) string {
-	u := fmt.Sprintf("%s/hls/%s/%s?e=%d&s=%s&t=%d&sig=%s",
-		c.base, url.PathEscape(code), file, exp, url.QueryEscape(site), iat, sign(code, site, exp, d, ip, iat))
+	p := purpose(file)
+	u := fmt.Sprintf("%s/hls/%s/%s?e=%d&s=%s&t=%d&p=%s&sig=%s",
+		c.base, url.PathEscape(code), file, exp, url.QueryEscape(site), iat, p, sign(code, site, exp, d, ip, iat, p))
 	if d > 0 {
 		u += fmt.Sprintf("&d=%d", d)
 	}
