@@ -52,7 +52,10 @@ func (r *assetRepo) List(ctx context.Context, f domain.ListFilter) ([]domain.Ass
 	} else {
 		m = m.Where("parent_id", 0)
 	}
-	if f.ReadyOnly {
+	if f.DramaOpen {
+		m = m.WhereNot("status", consts.AssetStatusOff).
+			Where("EXISTS (SELECT 1 FROM media_asset c WHERE c.parent_id = media_asset.id AND c.status = ?)", consts.AssetStatusReady)
+	} else if f.ReadyOnly {
 		m = m.Where("status", consts.AssetStatusReady)
 	} else if f.Status >= 0 {
 		m = m.Where("status", f.Status)
@@ -205,7 +208,11 @@ func (r *assetRepo) Pick(ctx context.Context, appKey, siteCode, code string) (*d
 	if a == nil {
 		return nil, nil
 	}
-	if a.Status != consts.AssetStatusReady {
+	ready, err := r.pickable(ctx, a)
+	if err != nil {
+		return nil, err
+	}
+	if !ready {
 		return nil, ErrAssetNotReady
 	}
 	exist, err := g.DB().Model("site_asset_pick").Ctx(ctx).
@@ -219,7 +226,7 @@ func (r *assetRepo) Pick(ctx context.Context, appKey, siteCode, code string) (*d
 			"site_code":  siteCode,
 			"asset_id":   a.Pk,
 			"created_at": gtime.Now(),
-		}).Insert()
+		}).InsertIgnore()
 		if err != nil {
 			return nil, err
 		}

@@ -36,6 +36,7 @@ type ListFilter struct {
 	Kind      int // -1 全部  0视频  1漫画  2动漫  3抖音  4小说  5短剧
 	ParentId  int64 // >0 时列出该整部下的剧集；0 时排除剧集
 	ReadyOnly bool
+	DramaOpen bool // 短剧整部：未下架且至少一集就绪
 }
 
 type TranscodeResult struct {
@@ -114,6 +115,8 @@ type Repository interface {
 	ListNovelChapters(ctx context.Context, assetID int64) ([]NovelChapter, error)
 	DeleteNovelChapter(ctx context.Context, assetID int64, seq int) error
 	GetByCode(ctx context.Context, code string) (*Asset, error)
+	GetByPK(ctx context.Context, pk int64) (*Asset, error)
+	ReadyEpisodeCounts(ctx context.Context, parentPKs []int64) (map[int64]int, error)
 	Delete(ctx context.Context, pk int64) error
 	DeleteTree(ctx context.Context, parentPK int64) error
 	CreateDrama(ctx context.Context, title, coverUrl, remark, intro string, updateStatus int) (code string, err error)

@@ -26,7 +26,18 @@ type AssetItem struct {
 	Kind         int    `json:"kind"`
 	Intro        string `json:"intro,omitempty"`
 	ChapterCount int    `json:"chapter_count,omitempty"`
+	EpisodeCount int    `json:"episode_count,omitempty"` // 短剧整部的就绪集数
+	UpdateStatus int    `json:"update_status,omitempty"`
 	Picked       bool   `json:"picked"`
+}
+
+// EpisodeItem 短剧就绪剧集，不含播放地址，播放需按剧集短码签发。
+type EpisodeItem struct {
+	Id          string `json:"id"`
+	Seq         int    `json:"seq"`
+	Title       string `json:"title"`
+	DurationSec int    `json:"duration_sec"`
+	CoverUrl    string `json:"cover_url"`
 }
 
 type ListReq struct {
@@ -34,7 +45,7 @@ type ListReq struct {
 	Page    int    `json:"page" d:"1"`
 	Size    int    `json:"size" d:"20"`
 	Keyword string `json:"keyword"`
-	Kind    int    `json:"kind" d:"0"` // 0视频 1漫画 2动漫 3抖音 4小说；默认视频以免旧站点拉到其它类型
+	Kind    int    `json:"kind" d:"0"` // 0视频 1漫画 2动漫 3抖音 4小说 5短剧整部；默认视频以免旧站点拉到其它类型
 }
 
 type ListRes struct {
@@ -52,6 +63,7 @@ type DetailRes struct {
 	PlayKey  string             `json:"play_key"`
 	Intro    string             `json:"intro,omitempty"`
 	Chapters []ComicChapterItem `json:"chapters,omitempty"`
+	Episodes []EpisodeItem      `json:"episodes,omitempty"`
 }
 
 type PickReq struct {
@@ -69,7 +81,10 @@ type PickRes struct {
 	Kind         int                `json:"kind"`
 	Intro        string             `json:"intro,omitempty"`
 	ChapterCount int                `json:"chapter_count,omitempty"`
+	EpisodeCount int                `json:"episode_count,omitempty"`
+	UpdateStatus int                `json:"update_status,omitempty"`
 	Chapters     []ComicChapterItem `json:"chapters,omitempty"`
+	Episodes     []EpisodeItem      `json:"episodes,omitempty"`
 }
 
 type PickListReq struct {

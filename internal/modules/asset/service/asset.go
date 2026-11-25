@@ -36,6 +36,9 @@ type Asset interface {
 	CreateEpisode(ctx context.Context, parentCode string, seq int, title string) (code string, created bool, err error)
 	UpdateEpisode(ctx context.Context, code, title string, seq int) error
 	ListEpisodes(ctx context.Context, parentCode string) ([]domain.Asset, error)
+	OpenDrama(ctx context.Context, code string) (series *domain.Asset, readyEpisodes []domain.Asset, err error)
+	OpenDramaEpisode(ctx context.Context, code string) (episode, series *domain.Asset, err error)
+	ReadyEpisodeCounts(ctx context.Context, parentPKs []int64) (map[int64]int, error)
 	ImportLimits(ctx context.Context) v1.DramaImportLimitsRes
 	CreateDramaUpload(ctx context.Context, filename string, totalSize int64) (*v1.DramaUploadRes, error)
 	GetDramaUpload(ctx context.Context, id string) (*v1.DramaUploadRes, error)

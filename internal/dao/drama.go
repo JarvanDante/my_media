@@ -210,3 +210,51 @@ func isUniqueViolation(err error) bool {
 	s := strings.ToLower(err.Error())
 	return strings.Contains(s, "duplicate") || strings.Contains(s, "unique")
 }
+
+func (r *assetRepo) GetByPK(ctx context.Context, pk int64) (*domain.Asset, error) {
+	row, err := r.dbx().Model("media_asset").Ctx(ctx).Where("id", pk).One()
+	if err != nil {
+		return nil, err
+	}
+	if row.IsEmpty() {
+		return nil, nil
+	}
+	a := mapAsset(row.Map())
+	return &a, nil
+}
+
+// ReadyEpisodeCounts 按整部主键统计就绪剧集数。
+func (r *assetRepo) ReadyEpisodeCounts(ctx context.Context, parentPKs []int64) (map[int64]int, error) {
+	out := map[int64]int{}
+	if len(parentPKs) == 0 {
+		return out, nil
+	}
+	rows, err := r.dbx().Model("media_asset").Ctx(ctx).
+		WhereIn("parent_id", parentPKs).Where("status", consts.AssetStatusReady).
+		Fields("parent_id, count(1) AS cnt").Group("parent_id").All()
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		out[row["parent_id"].Int64()] = row["cnt"].Int()
+	}
+	return out, nil
+}
+
+// pickable 普通资产需就绪；短剧只能选整部，且整部未下架并至少一集就绪。
+func (r *assetRepo) pickable(ctx context.Context, a *domain.Asset) (bool, error) {
+	if consts.IsDramaEpisode(a.Kind, a.ParentId) {
+		return false, nil
+	}
+	if !consts.IsDramaSeries(a.Kind, a.ParentId) {
+		return a.Status == consts.AssetStatusReady, nil
+	}
+	if a.Status == consts.AssetStatusOff {
+		return false, nil
+	}
+	n, err := r.ReadyEpisodeCounts(ctx, []int64{a.Pk})
+	if err != nil {
+		return false, err
+	}
+	return n[a.Pk] > 0, nil
+}

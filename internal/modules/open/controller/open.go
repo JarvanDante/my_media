@@ -32,14 +32,23 @@ func (c *Open) List(ctx context.Context, req *v1.ListReq) (res *v1.ListRes, err 
 	if kind < 0 {
 		kind = consts.KindVideo
 	}
+	f := domain.ListFilter{Page: req.Page, Size: req.Size, Keyword: req.Keyword, ReadyOnly: true, Kind: kind}
 	if kind == consts.KindDrama {
-		return &v1.ListRes{List: []v1.AssetItem{}}, nil
+		f.ReadyOnly, f.Status, f.DramaOpen = false, -1, true
 	}
-	list, total, err := c.svc.List(ctx, domain.ListFilter{
-		Page: req.Page, Size: req.Size, Keyword: req.Keyword, ReadyOnly: true, Kind: kind,
-	})
+	list, total, err := c.svc.List(ctx, f)
 	if err != nil {
 		return nil, err
+	}
+	var readyCnt map[int64]int
+	if kind == consts.KindDrama && len(list) > 0 {
+		pks := make([]int64, 0, len(list))
+		for _, a := range list {
+			pks = append(pks, a.Pk)
+		}
+		if readyCnt, err = c.svc.ReadyEpisodeCounts(ctx, pks); err != nil {
+			return nil, err
+		}
 	}
 	codes := make([]string, 0, len(list))
 	for _, a := range list {
@@ -54,7 +63,9 @@ func (c *Open) List(ctx context.Context, req *v1.ListReq) (res *v1.ListRes, err 
 	}
 	res = &v1.ListRes{Total: total, List: make([]v1.AssetItem, 0, len(list))}
 	for _, a := range list {
-		res.List = append(res.List, toOpenItem(a, picked[a.Code], siteCode))
+		item := toOpenItem(a, picked[a.Code], siteCode)
+		item.EpisodeCount = readyCnt[a.Pk]
+		res.List = append(res.List, item)
 	}
 	return res, nil
 }
@@ -64,11 +75,13 @@ func (c *Open) Detail(ctx context.Context, req *v1.DetailReq) (res *v1.DetailRes
 	if err != nil {
 		return nil, err
 	}
-	if a == nil || a.Status != 2 {
+	var eps []domain.Asset
+	if a != nil && a.Kind == consts.KindDrama {
+		if a, eps, err = c.svc.OpenDrama(ctx, req.Id); err != nil {
+			return nil, err
+		}
+	} else if a == nil || a.Status != 2 {
 		return nil, gerror.NewCode(errcode.CodeNotFound, "资产不可用")
-	}
-	if err := rejectOpenDrama(a); err != nil {
-		return nil, err
 	}
 	r := g.RequestFromCtx(ctx)
 	appKey := r.GetCtxVar("app_key").String()
@@ -79,6 +92,10 @@ func (c *Open) Detail(ctx context.Context, req *v1.DetailReq) (res *v1.DetailRes
 	}
 	item := toOpenItem(*a, picked[a.Code], siteCode)
 	res = &v1.DetailRes{AssetItem: item, PlayKey: a.PlayKey, Intro: a.Intro}
+	if eps != nil {
+		res.EpisodeCount = len(eps)
+		res.Episodes = toOpenEpisodes(eps, siteCode)
+	}
 	if a.Kind == consts.KindComics {
 		chs, e := c.svc.ComicChapters(ctx, a.Code)
 		if e != nil {
@@ -101,8 +118,9 @@ func (c *Open) Pick(ctx context.Context, req *v1.PickReq) (res *v1.PickRes, err 
 	if err != nil {
 		return nil, err
 	}
-	if err := rejectOpenDrama(cur); err != nil {
-		return nil, err
+	if cur != nil && (consts.IsDramaEpisode(cur.Kind, cur.ParentId) ||
+		(consts.IsDramaSeries(cur.Kind, cur.ParentId) && cur.Status == consts.AssetStatusOff)) {
+		return nil, gerror.NewCode(errcode.CodeNotFound, "资产不可用")
 	}
 	r := g.RequestFromCtx(ctx)
 	appKey := r.GetCtxVar("app_key").String()
@@ -122,6 +140,15 @@ func (c *Open) Pick(ctx context.Context, req *v1.PickReq) (res *v1.PickRes, err 
 		Id: a.Code, Title: a.Title, CoverUrl: item.CoverUrl, PlayUrl: item.PlayUrl,
 		PlayKey: a.PlayKey, DurationSec: a.DurationSec, Kind: a.Kind, Intro: a.Intro,
 		ChapterCount: a.ChapterCount,
+	}
+	if consts.IsDramaSeries(a.Kind, a.ParentId) {
+		_, eps, e := c.svc.OpenDrama(ctx, a.Code)
+		if e != nil {
+			return nil, e
+		}
+		res.PlayUrl, res.PlayKey = "", ""
+		res.UpdateStatus, res.EpisodeCount = a.UpdateStatus, len(eps)
+		res.Episodes = toOpenEpisodes(eps, siteCode)
 	}
 	if a.Kind == consts.KindComics {
 		chs, e := c.svc.ComicChapters(ctx, a.Code)
@@ -164,20 +191,27 @@ func (c *Open) PlayToken(ctx context.Context, req *v1.PlayTokenReq) (res *v1.Pla
 	if err != nil {
 		return nil, err
 	}
-	if a == nil || a.Status != 2 {
-		return nil, gerror.NewCode(errcode.CodeNotFound, "资产不可用")
+	if a != nil && consts.IsDramaSeries(a.Kind, a.ParentId) {
+		return nil, gerror.NewCode(errcode.CodeBadRequest, "短剧请传剧集ID")
 	}
-	if err := rejectOpenDrama(a); err != nil {
-		return nil, err
+	pickCode := req.Id
+	if a != nil && consts.IsDramaEpisode(a.Kind, a.ParentId) {
+		_, series, e := c.svc.OpenDramaEpisode(ctx, a.Code)
+		if e != nil {
+			return nil, e
+		}
+		pickCode = series.Code
+	} else if a == nil || a.Status != 2 {
+		return nil, gerror.NewCode(errcode.CodeNotFound, "资产不可用")
 	}
 	r := g.RequestFromCtx(ctx)
 	appKey := r.GetCtxVar("app_key").String()
 	siteCode := r.GetCtxVar("site_code").String()
-	picked, err := c.svc.PickedSet(ctx, appKey, []string{a.Code})
+	picked, err := c.svc.PickedSet(ctx, appKey, []string{pickCode})
 	if err != nil {
 		return nil, err
 	}
-	if !picked[a.Code] {
+	if !picked[pickCode] {
 		return nil, gerror.NewCode(errcode.CodeBadRequest, "请先选用该媒资")
 	}
 	// 平台级防刷: 按 app_key(站点)统计签发频率, 超限直接 429 + 告警日志。
@@ -208,14 +242,31 @@ func (c *Open) PlayToken(ctx context.Context, req *v1.PlayTokenReq) (res *v1.Pla
 func toOpenItem(a domain.Asset, picked bool, siteCode string) v1.AssetItem {
 	cover := playsign.WrapCover(a.Code, a.CoverUrl, siteCode)
 	play := a.PlayUrl
-	if a.Kind != consts.KindComics && a.Kind != consts.KindNovel {
+	if a.Kind == consts.KindDrama {
+		play = ""
+	} else if a.Kind != consts.KindComics && a.Kind != consts.KindNovel {
 		play = playsign.Wrap(a.Code, a.PlayUrl, siteCode)
 	}
-	return v1.AssetItem{
+	item := v1.AssetItem{
 		Id: a.Code, Title: a.Title, CoverUrl: cover, PlayUrl: play,
 		DurationSec: a.DurationSec, Kind: a.Kind, Intro: a.Intro,
 		ChapterCount: a.ChapterCount, Picked: picked,
 	}
+	if a.Kind == consts.KindDrama {
+		item.UpdateStatus = a.UpdateStatus
+	}
+	return item
+}
+
+func toOpenEpisodes(eps []domain.Asset, siteCode string) []v1.EpisodeItem {
+	out := make([]v1.EpisodeItem, 0, len(eps))
+	for _, e := range eps {
+		out = append(out, v1.EpisodeItem{
+			Id: e.Code, Seq: e.Seq, Title: e.Title, DurationSec: e.DurationSec,
+			CoverUrl: playsign.WrapCover(e.Code, e.CoverUrl, siteCode),
+		})
+	}
+	return out
 }
 
 func toOpenChapters(code, siteCode string, chs []adminv1.ComicChapterItem) []v1.ComicChapterItem {
@@ -235,14 +286,4 @@ func toOpenChapters(code, siteCode string, chs []adminv1.ComicChapterItem) []v1.
 		})
 	}
 	return out
-}
-
-func rejectOpenDrama(a *domain.Asset) error {
-	if a == nil {
-		return nil
-	}
-	if a.Kind == consts.KindDrama || a.ParentId > 0 {
-		return gerror.NewCode(errcode.CodeNotFound, "资产不可用")
-	}
-	return nil
 }
