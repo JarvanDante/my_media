@@ -140,6 +140,9 @@ func (s *sAsset) RetryDramaImportJob(ctx context.Context, id string) (*v1.DramaI
 		}
 		return s.dramaImportJobRes(ctx, job)
 	case dao.DramaJobFailed, dao.DramaJobCanceled:
+		if err := s.rejectIfUploadAborted(ctx, job); err != nil {
+			return nil, err
+		}
 		if err := s.requeueFailedOrCanceledIfPackReady(ctx, job); err != nil {
 			return nil, err
 		}
@@ -369,6 +372,7 @@ func (s *sAsset) RunDramaImportWorker(ctx context.Context) {
 
 func (s *sAsset) tickDramaImport(ctx context.Context, owner string) error {
 	s.cleanupExpiredDramaUploads(ctx)
+	s.sweepAbortedDramaUploads(ctx, dramaAbortSweepWindow(ctx))
 	if err := dao.FailExhaustedStaleDramaJobs(ctx); err != nil {
 		g.Log().Warningf(ctx, "fail exhausted drama jobs: %v", err)
 	}
@@ -390,21 +394,45 @@ func (s *sAsset) tickDramaImport(ctx context.Context, owner string) error {
 }
 
 func (s *sAsset) cleanupExpiredDramaUploads(ctx context.Context) {
-	list, err := dao.ListExpiredDramaUploads(ctx, 20)
+	list, err := dao.ListExpiredDramaUploadsOnDB(s.uploadDB(), ctx, 20)
 	if err != nil {
 		g.Log().Warningf(ctx, "list expired drama uploads: %v", err)
 		return
 	}
-	for _, up := range list {
-		if s.store != nil && strings.HasPrefix(up.Prefix, consts.PrefixDrama+"import/"+up.Code+"/") {
-			if _, err := s.store.RemovePrefix(ctx, up.Bucket, up.Prefix); err != nil {
-				g.Log().Warningf(ctx, "cleanup expired upload %s: %v", up.Code, err)
-				continue
-			}
-		}
-		if err := dao.AbortDramaUpload(ctx, up.Pk); err != nil {
+	for i := range list {
+		up := &list[i]
+		aborted, err := dao.AbortExpiredDramaUploadOnDB(s.uploadDB(), ctx, up.Pk)
+		if err != nil {
 			g.Log().Warningf(ctx, "abort expired upload %s: %v", up.Code, err)
+			continue
 		}
+		if !aborted {
+			continue
+		}
+		if _, err := s.purgeDramaUploadObjects(ctx, up); err != nil {
+			g.Log().Warningf(ctx, "cleanup expired upload %s: %v", up.Code, err)
+		}
+	}
+}
+
+// sweepAbortedDramaUploads 按游标轮转补扫窗口内已取消会话的迟到对象。
+func (s *sAsset) sweepAbortedDramaUploads(ctx context.Context, window time.Duration) {
+	after := s.abortSweepAfter.Load()
+	list, err := dao.ListAbortedDramaUploadsForSweepOnDB(s.uploadDB(), ctx, after, window, 20)
+	if err != nil {
+		g.Log().Warningf(ctx, "list aborted drama uploads: %v", err)
+		return
+	}
+	if len(list) == 0 {
+		s.abortSweepAfter.Store(0)
+		return
+	}
+	for i := range list {
+		up := &list[i]
+		if _, err := s.purgeDramaUploadObjects(ctx, up); err != nil {
+			g.Log().Warningf(ctx, "sweep aborted upload %s: %v", up.Code, err)
+		}
+		s.abortSweepAfter.Store(up.Pk)
 	}
 }
 

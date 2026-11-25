@@ -228,10 +228,14 @@ func pad5(n int) string {
 }
 
 func GetDramaUploadByCode(ctx context.Context, code string) (*DramaImportUpload, error) {
+	return GetDramaUploadByCodeOnDB(g.DB(), ctx, code)
+}
+
+func GetDramaUploadByCodeOnDB(db gdb.DB, ctx context.Context, code string) (*DramaImportUpload, error) {
 	if !ValidDramaImportCode(code) {
 		return nil, nil
 	}
-	row, err := g.DB().Model("drama_import_upload").Ctx(ctx).Where("code", code).One()
+	row, err := db.Model("drama_import_upload").Ctx(ctx).Where("code", code).One()
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +243,7 @@ func GetDramaUploadByCode(ctx context.Context, code string) (*DramaImportUpload,
 		return nil, nil
 	}
 	u := mapDramaUpload(row.Map())
-	parts, err := listDramaParts(ctx, u.Pk)
+	parts, err := listDramaPartsDB(db, ctx, u.Pk)
 	if err != nil {
 		return nil, err
 	}
@@ -247,8 +251,8 @@ func GetDramaUploadByCode(ctx context.Context, code string) (*DramaImportUpload,
 	return &u, nil
 }
 
-func listDramaParts(ctx context.Context, uploadID int64) ([]DramaImportPart, error) {
-	rows, err := g.DB().Model("drama_import_part").Ctx(ctx).Where("upload_id", uploadID).OrderAsc("n").All()
+func listDramaPartsDB(db gdb.DB, ctx context.Context, uploadID int64) ([]DramaImportPart, error) {
+	rows, err := db.Model("drama_import_part").Ctx(ctx).Where("upload_id", uploadID).OrderAsc("n").All()
 	if err != nil {
 		return nil, err
 	}
@@ -269,7 +273,11 @@ func listDramaParts(ctx context.Context, uploadID int64) ([]DramaImportPart, err
 }
 
 func MarkDramaPartUploaded(ctx context.Context, uploadID int64, n int, size int64) error {
-	_, err := g.DB().Model("drama_import_part").Ctx(ctx).
+	return MarkDramaPartUploadedOnDB(g.DB(), ctx, uploadID, n, size)
+}
+
+func MarkDramaPartUploadedOnDB(db gdb.DB, ctx context.Context, uploadID int64, n int, size int64) error {
+	_, err := db.Model("drama_import_part").Ctx(ctx).
 		Where("upload_id", uploadID).Where("n", n).Data(g.Map{
 		"size":        size,
 		"uploaded_at": gtime.Now(),
@@ -278,122 +286,22 @@ func MarkDramaPartUploaded(ctx context.Context, uploadID int64, n int, size int6
 }
 
 func MarkDramaPartsUploaded(ctx context.Context, uploadID int64, ns []int) error {
+	return MarkDramaPartsUploadedOnDB(g.DB(), ctx, uploadID, ns)
+}
+
+func MarkDramaPartsUploadedOnDB(db gdb.DB, ctx context.Context, uploadID int64, ns []int) error {
 	if len(ns) == 0 {
 		return nil
 	}
-	_, err := g.DB().Model("drama_import_part").Ctx(ctx).
+	_, err := db.Model("drama_import_part").Ctx(ctx).
 		Where("upload_id", uploadID).WhereIn("n", ns).Data(g.Map{
 		"uploaded_at": gtime.Now(),
 	}).Update()
 	return err
 }
 
-func CompleteDramaUpload(ctx context.Context, uploadID int64, packKey, planJSON, jobCode string) error {
-	_, err := g.DB().Model("drama_import_upload").Ctx(ctx).Where("id", uploadID).Data(g.Map{
-		"pack_key":     packKey,
-		"plan_json":    planJSON,
-		"job_code":     jobCode,
-		"status":       DramaUploadCompleted,
-		"completed_at": gtime.Now(),
-		"updated_at":   gtime.Now(),
-	}).Update()
-	return err
-}
-
-func AbortDramaUpload(ctx context.Context, uploadID int64) error {
-	_, err := g.DB().Model("drama_import_upload").Ctx(ctx).Where("id", uploadID).Data(g.Map{
-		"status":     DramaUploadAborted,
-		"updated_at": gtime.Now(),
-	}).Update()
-	return err
-}
-
 func ListExpiredDramaUploads(ctx context.Context, limit int) ([]DramaImportUpload, error) {
-	if limit <= 0 {
-		limit = 20
-	}
-	rows, err := g.DB().Model("drama_import_upload").Ctx(ctx).
-		Where("status", DramaUploadUploading).
-		Where("expires_at <", gtime.Now()).
-		Where("job_code", "").
-		Limit(limit).All()
-	if err != nil {
-		return nil, err
-	}
-	out := make([]DramaImportUpload, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, mapDramaUpload(row.Map()))
-	}
-	return out, nil
-}
-
-func CreateDramaImportJob(ctx context.Context, upload *DramaImportUpload, planJSON string) (*DramaImportJob, error) {
-	if upload == nil {
-		return nil, errors.New("缺少上传会话")
-	}
-	var out *DramaImportJob
-	err := g.DB().Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
-		// 同一会话只建一个任务（幂等）
-		exist, err := tx.Model("drama_import_job").Ctx(ctx).Where("upload_id", upload.Pk).One()
-		if err != nil {
-			return err
-		}
-		if !exist.IsEmpty() {
-			j := mapDramaJob(exist.Map())
-			out = &j
-			return nil
-		}
-		var code string
-		for i := 0; i < 8; i++ {
-			c, err := newImportCode()
-			if err != nil {
-				return err
-			}
-			got, err := tx.Model("drama_import_job").Ctx(ctx).Where("code", c).One()
-			if err != nil {
-				return err
-			}
-			if got.IsEmpty() {
-				code = c
-				break
-			}
-		}
-		if code == "" {
-			return errors.New("生成导入任务短码失败, 请重试")
-		}
-		now := gtime.Now()
-		id, err := tx.Model("drama_import_job").Ctx(ctx).Data(g.Map{
-			"code":         code,
-			"upload_id":    upload.Pk,
-			"upload_code":  upload.Code,
-			"bucket":       upload.Bucket,
-			"pack_key":     upload.PackKey,
-			"plan_json":    planJSON,
-			"status":       DramaJobQueued,
-			"stage":        "queued",
-			"max_attempts": 3,
-			"created_at":   now,
-			"updated_at":   now,
-		}).InsertAndGetId()
-		if err != nil {
-			return err
-		}
-		if _, err := tx.Model("drama_import_upload").Ctx(ctx).Where("id", upload.Pk).Data(g.Map{
-			"job_code":   code,
-			"plan_json":  planJSON,
-			"updated_at": now,
-		}).Update(); err != nil {
-			return err
-		}
-		out = &DramaImportJob{
-			Pk: id, Code: code, UploadID: upload.Pk, UploadCode: upload.Code,
-			Bucket: upload.Bucket, PackKey: upload.PackKey, PlanJSON: planJSON,
-			Status: DramaJobQueued, Stage: "queued", MaxAttempts: 3,
-			CreatedAt: now.Time, UpdatedAt: now.Time,
-		}
-		return nil
-	})
-	return out, err
+	return ListExpiredDramaUploadsOnDB(g.DB(), ctx, limit)
 }
 
 func GetDramaImportJobByCode(ctx context.Context, code string) (*DramaImportJob, error) {
@@ -478,7 +386,8 @@ func leaseFreshWhere(m *gdb.Model) *gdb.Model {
 }
 
 func leaseClaimableWhere(m *gdb.Model) *gdb.Model {
-	return m.Where("(status = ? OR (status = ? AND (lease_until IS NULL OR lease_until <= clock_timestamp())))", DramaJobQueued, DramaJobRunning)
+	return m.Where("(status = ? OR (status = ? AND (lease_until IS NULL OR lease_until <= clock_timestamp())))", DramaJobQueued, DramaJobRunning).
+		Where("NOT EXISTS (SELECT 1 FROM drama_import_upload u WHERE u.id = drama_import_job.upload_id AND u.status = ?)", DramaUploadAborted)
 }
 
 // lockDramaJobRowForLease 先按 owner/generation/running 锁定任务行，不在锁前用时间资格过滤。
@@ -578,6 +487,7 @@ func claimDramaImportJobDB(db gdb.DB, ctx context.Context, owner string, leaseTT
 			return nil
 		}
 		j := mapDramaJob(row.Map())
+		runTxHook(claimAfterRowLockHook, ctx, tx)
 		// 行锁后再以实际当前 DB 时间确认仍可认领，避免锁前资格在等待期间失效或被续租。
 		fresh, err := leaseClaimableWhere(tx.Model("drama_import_job").Ctx(ctx).
 			Where("id", j.Pk).
@@ -808,24 +718,6 @@ func withDramaJobLeaseDB(db gdb.DB, ctx context.Context, lease DramaJobLease, fn
 	})
 }
 
-func CancelQueuedDramaImportJob(ctx context.Context, id int64, message string) error {
-	now := gtime.Now()
-	_, err := g.DB().Model("drama_import_job").Ctx(ctx).
-		Where("id", id).
-		Where("status", DramaJobQueued).
-		Data(g.Map{
-			"status":      DramaJobCanceled,
-			"stage":       "canceled",
-			"message":     message,
-			"error":       message,
-			"finished_at": now,
-			"updated_at":  now,
-			"owner":       "",
-			"lease_until": nil,
-		}).Update()
-	return err
-}
-
 var ErrDramaImportJobNotRequeued = errors.New("任务状态已变化，未能转入重试排队")
 
 func requeueDramaImportJobIfStatus(db gdb.DB, ctx context.Context, id int64, from []string) error {
@@ -835,30 +727,43 @@ func requeueDramaImportJobIfStatus(db gdb.DB, ctx context.Context, id int64, fro
 	if len(from) == 0 {
 		return errors.New("缺少可重排队的状态")
 	}
-	r, err := db.Model("drama_import_job").Ctx(ctx).
-		Where("id", id).
-		WhereIn("status", from).
-		Data(g.Map{
-			"status":      DramaJobQueued,
-			"stage":       "queued",
-			"error":       "",
-			"attempts":    0,
-			"finished_at": nil,
-			"updated_at":  gtime.Now(),
-			"owner":       "",
-			"lease_until": nil,
-		}).Update()
-	if err != nil {
-		return err
-	}
-	n, err := r.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return ErrDramaImportJobNotRequeued
-	}
-	return nil
+	return db.Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
+		up, err := tx.Model("drama_import_upload").Ctx(ctx).
+			Where("id = (SELECT upload_id FROM drama_import_job WHERE id = ?)", id).LockUpdate().One()
+		if err != nil {
+			return err
+		}
+		if up.IsEmpty() {
+			return ErrDramaUploadNotFound
+		}
+		if up["status"].String() == DramaUploadAborted {
+			return ErrDramaUploadAborted
+		}
+		r, err := tx.Model("drama_import_job").Ctx(ctx).
+			Where("id", id).
+			WhereIn("status", from).
+			Data(g.Map{
+				"status":      DramaJobQueued,
+				"stage":       "queued",
+				"error":       "",
+				"attempts":    0,
+				"finished_at": nil,
+				"updated_at":  gtime.Now(),
+				"owner":       "",
+				"lease_until": nil,
+			}).Update()
+		if err != nil {
+			return err
+		}
+		n, err := r.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return ErrDramaImportJobNotRequeued
+		}
+		return nil
+	})
 }
 
 func RequeueDramaImportJob(ctx context.Context, id int64) error {

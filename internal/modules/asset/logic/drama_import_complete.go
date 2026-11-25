@@ -705,10 +705,10 @@ func (s *sAsset) requeueIncompleteImportDone(ctx context.Context, id int64) erro
 
 func (s *sAsset) packReadyForRequeue(ctx context.Context, job *dao.DramaImportJob) error {
 	if job == nil || job.PackKey == "" || s.dramaBlobs() == nil {
-		return gerror.NewCode(errcode.CodeBadRequest, "整包已不可用，请重新上传")
+		return gerror.NewCode(errcode.CodeDramaPackUnavailable, "整包已不可用，请重新上传")
 	}
 	if err := s.dramaBlobs().Stat(ctx, job.Bucket, job.PackKey); err != nil {
-		return gerror.NewCode(errcode.CodeBadRequest, "整包已不可用，请重新上传")
+		return gerror.NewCode(errcode.CodeDramaPackUnavailable, "整包已不可用，请重新上传")
 	}
 	return nil
 }
@@ -716,6 +716,9 @@ func (s *sAsset) packReadyForRequeue(ctx context.Context, job *dao.DramaImportJo
 func mapRequeueErr(err error) error {
 	if err == nil {
 		return nil
+	}
+	if errors.Is(err, dao.ErrDramaUploadAborted) {
+		return gerror.NewCode(errcode.CodeDramaUploadAborted, "上传会话已取消，请重新上传")
 	}
 	if errors.Is(err, dao.ErrDramaImportJobNotRequeued) {
 		return gerror.NewCode(errcode.CodeBadRequest, "任务状态已变化，未能转入重试排队，请刷新后重试")
@@ -725,14 +728,32 @@ func mapRequeueErr(err error) error {
 
 func (s *sAsset) requeueIncompleteImportDoneIfPackReady(ctx context.Context, job *dao.DramaImportJob) error {
 	if err := s.packReadyForRequeue(ctx, job); err != nil {
-		return gerror.NewCode(errcode.CodeBadRequest, "入库未完成且整包已不可用，无法补齐失败项，请重新上传")
+		return gerror.NewCode(errcode.CodeDramaPackUnavailable, "入库未完成且整包已不可用，无法补齐失败项，请重新上传")
 	}
 	if err := s.requeueIncompleteImportDone(ctx, job.Pk); err != nil {
 		return mapRequeueErr(err)
 	}
 	// 快照后、转入排队后源被删：不把仍成功排队的结果交给调用方。
 	if err := s.packReadyForRequeue(ctx, job); err != nil {
-		return gerror.NewCode(errcode.CodeBadRequest, "任务在转入重试排队后整包已不可用，请重新上传，不要当作已成功排队")
+		return gerror.NewCode(errcode.CodeDramaPackUnavailable, "任务在转入重试排队后整包已不可用，请重新上传，不要当作已成功排队")
+	}
+	return nil
+}
+
+// rejectIfUploadAborted 上传会话已取消时直接返回 40901，不再误报整包不可用。
+func (s *sAsset) rejectIfUploadAborted(ctx context.Context, job *dao.DramaImportJob) error {
+	if job == nil {
+		return nil
+	}
+	if job.Status == dao.DramaJobCanceled {
+		return gerror.NewCode(errcode.CodeDramaUploadAborted, "上传会话已取消，请重新上传")
+	}
+	up, err := dao.GetDramaUploadByCodeOnDB(s.uploadDB(), ctx, job.UploadCode)
+	if err != nil {
+		return err
+	}
+	if up != nil && up.Status == dao.DramaUploadAborted {
+		return gerror.NewCode(errcode.CodeDramaUploadAborted, "上传会话已取消，请重新上传")
 	}
 	return nil
 }
@@ -745,7 +766,7 @@ func (s *sAsset) requeueFailedOrCanceledIfPackReady(ctx context.Context, job *da
 		return mapRequeueErr(err)
 	}
 	if err := s.packReadyForRequeue(ctx, job); err != nil {
-		return gerror.NewCode(errcode.CodeBadRequest, "任务在转入重试排队后整包已不可用，请重新上传，不要当作已成功排队")
+		return gerror.NewCode(errcode.CodeDramaPackUnavailable, "任务在转入重试排队后整包已不可用，请重新上传，不要当作已成功排队")
 	}
 	return nil
 }
