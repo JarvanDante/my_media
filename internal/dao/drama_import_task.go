@@ -300,8 +300,8 @@ func MarkDramaPartsUploadedOnDB(db gdb.DB, ctx context.Context, uploadID int64, 
 	return err
 }
 
-func ListExpiredDramaUploads(ctx context.Context, limit int) ([]DramaImportUpload, error) {
-	return ListExpiredDramaUploadsOnDB(g.DB(), ctx, limit)
+func ListExpiredDramaUploads(ctx context.Context, grace time.Duration, limit int) ([]DramaImportUpload, error) {
+	return ListExpiredDramaUploadsOnDB(g.DB(), ctx, grace, limit)
 }
 
 func GetDramaImportJobByCode(ctx context.Context, code string) (*DramaImportJob, error) {
@@ -487,7 +487,6 @@ func claimDramaImportJobDB(db gdb.DB, ctx context.Context, owner string, leaseTT
 			return nil
 		}
 		j := mapDramaJob(row.Map())
-		runTxHook(claimAfterRowLockHook, ctx, tx)
 		// 行锁后再以实际当前 DB 时间确认仍可认领，避免锁前资格在等待期间失效或被续租。
 		fresh, err := leaseClaimableWhere(tx.Model("drama_import_job").Ctx(ctx).
 			Where("id", j.Pk).

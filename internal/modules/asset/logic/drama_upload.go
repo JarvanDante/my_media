@@ -30,25 +30,6 @@ var dramaComposeTimeout = time.Duration(defaultImportTimeoutSec) * time.Second
 // dramaPurgeTimeout 会话对象清理脱离请求取消后的上限。
 const dramaPurgeTimeout = time.Minute
 
-// completeAfterComposeHook 仅测试注入：Compose 结束后、Finalize 事务之前。
-var completeAfterComposeHook func(ctx context.Context, uploadCode string)
-
-// dramaUploadStore 上传会话需要的对象存储能力；*storage.Minio 满足此接口。
-type dramaUploadStore interface {
-	dramaObjectStore
-	ComposeObjects(ctx context.Context, bucket, dstKey string, srcKeys []string) error
-}
-
-func (s *sAsset) uploadBlobs() dramaUploadStore {
-	if s.uploadObjects != nil {
-		return s.uploadObjects
-	}
-	if s.store != nil {
-		return s.store
-	}
-	return nil
-}
-
 func (s *sAsset) uploadDB() gdb.DB {
 	if s.jobDB != nil {
 		return s.jobDB
@@ -147,7 +128,7 @@ func (s *sAsset) loadDramaUpload(ctx context.Context, id string) (*dao.DramaImpo
 }
 
 func (s *sAsset) refreshDramaUploadParts(ctx context.Context, up *dao.DramaImportUpload) error {
-	store := s.uploadBlobs()
+	store := s.store
 	if store == nil || up == nil {
 		return nil
 	}
@@ -259,7 +240,7 @@ func (s *sAsset) PutDramaUploadPart(ctx context.Context, id string, n int, body 
 }
 
 func (s *sAsset) CompleteDramaUpload(ctx context.Context, id, planJSON, targetID string) (*v1.CompleteDramaUploadRes, error) {
-	store := s.uploadBlobs()
+	store := s.store
 	if store == nil {
 		return nil, gerror.NewCode(errcode.CodeBadRequest, "MinIO 未初始化")
 	}
@@ -295,13 +276,10 @@ func (s *sAsset) CompleteDramaUpload(ctx context.Context, id, planJSON, targetID
 	if err := s.composeDramaPack(ctx, store, up, packKey); err != nil {
 		return s.afterComposeFailure(ctx, up, err)
 	}
-	if hook := completeAfterComposeHook; hook != nil {
-		hook(ctx, up.Code)
-	}
 	return s.finalizeDramaUpload(ctx, up, packKey, planJSON)
 }
 
-func (s *sAsset) composeDramaPack(ctx context.Context, store dramaUploadStore, up *dao.DramaImportUpload, packKey string) error {
+func (s *sAsset) composeDramaPack(ctx context.Context, store *storage.Minio, up *dao.DramaImportUpload, packKey string) error {
 	if sz, err := store.ObjectSize(ctx, up.Bucket, packKey); err == nil && sz == up.TotalSize {
 		return nil
 	}
@@ -363,7 +341,7 @@ func (s *sAsset) finalizeDramaUpload(ctx context.Context, up *dao.DramaImportUpl
 	}
 	if created {
 		// 仅建任务的一方清理分片，pack 留给任务使用
-		if store := s.uploadBlobs(); store != nil {
+		if store := s.store; store != nil {
 			for _, p := range up.Parts {
 				if err := store.RemoveObject(ctx, up.Bucket, p.ObjectKey); err != nil {
 					g.Log().Warningf(ctx, "cleanup part %s: %v", p.ObjectKey, err)
@@ -376,7 +354,7 @@ func (s *sAsset) finalizeDramaUpload(ctx context.Context, up *dao.DramaImportUpl
 
 // purgeDramaUploadObjects 仅在取消资格已提交后清理本会话前缀，脱离请求取消。
 func (s *sAsset) purgeDramaUploadObjects(ctx context.Context, up *dao.DramaImportUpload) (int, error) {
-	store := s.uploadBlobs()
+	store := s.store
 	if store == nil || up == nil || !strings.HasPrefix(up.Prefix, consts.DramaImportPrefix(up.Code)) {
 		return 0, nil
 	}

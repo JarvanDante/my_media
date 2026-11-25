@@ -394,14 +394,14 @@ func (s *sAsset) tickDramaImport(ctx context.Context, owner string) error {
 }
 
 func (s *sAsset) cleanupExpiredDramaUploads(ctx context.Context) {
-	list, err := dao.ListExpiredDramaUploadsOnDB(s.uploadDB(), ctx, 20)
+	list, err := dao.ListExpiredDramaUploadsOnDB(s.uploadDB(), ctx, dramaComposeTimeout, 20)
 	if err != nil {
 		g.Log().Warningf(ctx, "list expired drama uploads: %v", err)
 		return
 	}
 	for i := range list {
 		up := &list[i]
-		aborted, err := dao.AbortExpiredDramaUploadOnDB(s.uploadDB(), ctx, up.Pk)
+		aborted, err := dao.AbortExpiredDramaUploadOnDB(s.uploadDB(), ctx, up.Pk, dramaComposeTimeout)
 		if err != nil {
 			g.Log().Warningf(ctx, "abort expired upload %s: %v", up.Code, err)
 			continue

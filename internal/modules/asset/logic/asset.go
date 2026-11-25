@@ -32,7 +32,6 @@ type sAsset struct {
 	// 可选覆盖：隔离测试注入对象存储与任务库，生产保持 nil，行为与仅用 store/g.DB 相同。
 	objects               dramaObjectStore
 	jobDB                 gdb.DB
-	uploadObjects         dramaUploadStore
 	abortSweepAfter       atomic.Int64
 	enqueueDramaTranscode func(ctx context.Context, lease dao.DramaJobLease, code string, coverSeekSec int) (string, error)
 }

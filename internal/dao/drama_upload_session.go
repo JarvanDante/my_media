@@ -18,19 +18,6 @@ var (
 	ErrDramaUploadNotReady   = errors.New("上传会话状态不允许完成")
 )
 
-// 仅测试注入：已锁定上传行之后、提交之前。
-var (
-	finalizeUploadInTxHook func(ctx context.Context, tx gdb.TX)
-	abortUploadInTxHook    func(ctx context.Context, tx gdb.TX)
-	claimAfterRowLockHook  func(ctx context.Context, tx gdb.TX)
-)
-
-func runTxHook(hook func(ctx context.Context, tx gdb.TX), ctx context.Context, tx gdb.TX) {
-	if hook != nil {
-		hook(ctx, tx)
-	}
-}
-
 func lockDramaUploadTx(ctx context.Context, tx gdb.TX, uploadID int64) (*DramaImportUpload, error) {
 	row, err := tx.Model("drama_import_upload").Ctx(ctx).Where("id", uploadID).LockUpdate().One()
 	if err != nil {
@@ -78,7 +65,6 @@ func FinalizeDramaUploadOnDB(db gdb.DB, ctx context.Context, uploadID int64, pac
 		if err != nil {
 			return err
 		}
-		runTxHook(finalizeUploadInTxHook, ctx, tx)
 		existing, err := dramaJobByUploadTx(ctx, tx, uploadID, false)
 		if err != nil {
 			return err
@@ -218,7 +204,6 @@ func AbortDramaUploadTxOnDB(db gdb.DB, ctx context.Context, uploadID int64, reas
 				return ErrDramaUploadJobStarted
 			}
 		}
-		runTxHook(abortUploadInTxHook, ctx, tx)
 		if up.Status == DramaUploadAborted {
 			already = true
 			return nil
@@ -233,8 +218,8 @@ func AbortDramaUploadTxOnDB(db gdb.DB, ctx context.Context, uploadID int64, reas
 	return already, err
 }
 
-// AbortExpiredDramaUploadOnDB 仅在行锁内确认仍为未建任务的过期上传时标记取消。
-func AbortExpiredDramaUploadOnDB(db gdb.DB, ctx context.Context, uploadID int64) (bool, error) {
+// AbortExpiredDramaUploadOnDB 仅在行锁内确认仍为未建任务且已过宽限期的过期上传时标记取消。
+func AbortExpiredDramaUploadOnDB(db gdb.DB, ctx context.Context, uploadID int64, grace time.Duration) (bool, error) {
 	aborted := false
 	err := db.Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
 		if _, err := lockDramaUploadTx(ctx, tx, uploadID); err != nil {
@@ -244,7 +229,7 @@ func AbortExpiredDramaUploadOnDB(db gdb.DB, ctx context.Context, uploadID int64)
 			Where("id", uploadID).
 			Where("status", DramaUploadUploading).
 			Where("job_code", "").
-			Where("expires_at < clock_timestamp()").
+			Where(expiredPastGraceSQL(grace)).
 			Where("NOT EXISTS (SELECT 1 FROM drama_import_job j WHERE j.upload_id = drama_import_upload.id)").
 			Data(g.Map{"status": DramaUploadAborted, "updated_at": dbClock()}).Update()
 		if err != nil {
@@ -257,13 +242,22 @@ func AbortExpiredDramaUploadOnDB(db gdb.DB, ctx context.Context, uploadID int64)
 	return aborted, err
 }
 
-func ListExpiredDramaUploadsOnDB(db gdb.DB, ctx context.Context, limit int) ([]DramaImportUpload, error) {
+// expiredPastGraceSQL 过期判断统一用 DB 时钟并留出在途合并的宽限期。
+func expiredPastGraceSQL(grace time.Duration) string {
+	ms := grace.Milliseconds()
+	if ms < 0 {
+		ms = 0
+	}
+	return fmt.Sprintf("expires_at + interval '%d milliseconds' < clock_timestamp()", ms)
+}
+
+func ListExpiredDramaUploadsOnDB(db gdb.DB, ctx context.Context, grace time.Duration, limit int) ([]DramaImportUpload, error) {
 	if limit <= 0 {
 		limit = 20
 	}
 	rows, err := db.Model("drama_import_upload").Ctx(ctx).
 		Where("status", DramaUploadUploading).
-		Where("expires_at < clock_timestamp()").
+		Where(expiredPastGraceSQL(grace)).
 		Where("job_code", "").
 		OrderAsc("id").Limit(limit).All()
 	if err != nil {
